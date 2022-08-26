@@ -3,6 +3,8 @@
 use namada_core::ledger::storage_api::collections::{lazy_map, lazy_vec};
 use namada_core::types::address::Address;
 use namada_core::types::storage::{DbKeySeg, Epoch, Key, KeySeg};
+use namada_core::types::{key, token};
+use rust_decimal::Decimal;
 
 use super::ADDRESS;
 use crate::epoched::LAZY_MAP_SUB_KEY;
@@ -13,10 +15,15 @@ const VALIDATOR_STORAGE_PREFIX: &str = "validator";
 const VALIDATOR_ADDRESS_RAW_HASH: &str = "address_raw_hash";
 const VALIDATOR_CONSENSUS_KEY_STORAGE_KEY: &str = "consensus_key";
 const VALIDATOR_STATE_STORAGE_KEY: &str = "state";
-const VALIDATOR_DELTAS_STORAGE_KEY: &str = "validator_deltas";
+const VALIDATOR_DELTAS_STORAGE_KEY: &str = "deltas";
 const VALIDATOR_COMMISSION_RATE_STORAGE_KEY: &str = "commission_rate";
 const VALIDATOR_MAX_COMMISSION_CHANGE_STORAGE_KEY: &str =
     "max_commission_rate_change";
+const VALIDATOR_SELF_REWARDS_PRODUCT_KEY: &str = "validator_rewards_product";
+const VALIDATOR_DELEGATION_REWARDS_PRODUCT_KEY: &str =
+    "delegation_rewards_product";
+const VALIDATOR_LAST_KNOWN_PRODUCT_EPOCH_KEY: &str =
+    "last_known_rewards_product_epoch";
 const SLASHES_PREFIX: &str = "slash";
 const BOND_STORAGE_KEY: &str = "bond";
 const UNBOND_STORAGE_KEY: &str = "unbond";
@@ -26,6 +33,13 @@ const NUM_CONSENSUS_VALIDATORS_STORAGE_KEY: &str = "num_consensus";
 const BELOW_CAPACITY_VALIDATOR_SET_STORAGE_KEY: &str = "below_capacity";
 const TOTAL_DELTAS_STORAGE_KEY: &str = "total_deltas";
 const VALIDATOR_SET_POSITIONS_KEY: &str = "validator_set_positions";
+const LAST_BLOCK_PROPOSER_STORAGE_KEY: &str = "last_block_proposer";
+const CURRENT_BLOCK_PROPOSER_STORAGE_KEY: &str = "current_block_proposer";
+const CONSENSUS_VALIDATOR_SET_ACCUMULATOR_STORAGE_KEY: &str =
+    "reward_accumulator";
+//const VALIDATOR_SET_STORAGE_PREFIX: &str = "validator_set";
+//const CONSENSUS_VALIDATOR_SET_STORAGE_PREFIX: &str = "consensus";
+//const CONSENSUS_VALIDATOR_SET_STORAGE_KEY: &str = "set";
 
 /// Is the given key a PoS storage key?
 pub fn is_pos_key(key: &Key) -> bool {
@@ -151,6 +165,85 @@ pub fn is_validator_max_commission_rate_change_key(
         ] if addr == &ADDRESS
             && prefix == VALIDATOR_STORAGE_PREFIX
             && key == VALIDATOR_MAX_COMMISSION_CHANGE_STORAGE_KEY =>
+        {
+            Some(validator)
+        }
+        _ => None,
+    }
+}
+
+/// Storage key for validator's self rewards products.
+pub fn validator_self_rewards_product_key(validator: &Address) -> Key {
+    validator_prefix(validator)
+        .push(&VALIDATOR_SELF_REWARDS_PRODUCT_KEY.to_owned())
+        .expect("Cannot obtain a storage key")
+}
+
+/// Is storage key for validator's self rewards products?
+pub fn is_validator_self_rewards_product_key(key: &Key) -> Option<&Address> {
+    match &key.segments[..] {
+        [
+            DbKeySeg::AddressSeg(addr),
+            DbKeySeg::StringSeg(prefix),
+            DbKeySeg::AddressSeg(validator),
+            DbKeySeg::StringSeg(key),
+        ] if addr == &ADDRESS
+            && prefix == VALIDATOR_STORAGE_PREFIX
+            && key == VALIDATOR_SELF_REWARDS_PRODUCT_KEY =>
+        {
+            Some(validator)
+        }
+        _ => None,
+    }
+}
+
+/// Storage key for validator's delegation rewards products.
+pub fn validator_delegation_rewards_product_key(validator: &Address) -> Key {
+    validator_prefix(validator)
+        .push(&VALIDATOR_DELEGATION_REWARDS_PRODUCT_KEY.to_owned())
+        .expect("Cannot obtain a storage key")
+}
+
+/// Is storage key for validator's delegation rewards products?
+pub fn is_validator_delegation_rewards_product_key(
+    key: &Key,
+) -> Option<&Address> {
+    match &key.segments[..] {
+        [
+            DbKeySeg::AddressSeg(addr),
+            DbKeySeg::StringSeg(prefix),
+            DbKeySeg::AddressSeg(validator),
+            DbKeySeg::StringSeg(key),
+        ] if addr == &ADDRESS
+            && prefix == VALIDATOR_STORAGE_PREFIX
+            && key == VALIDATOR_DELEGATION_REWARDS_PRODUCT_KEY =>
+        {
+            Some(validator)
+        }
+        _ => None,
+    }
+}
+
+/// Storage key for validator's last known rewards product epoch.
+pub fn validator_last_known_product_epoch_key(validator: &Address) -> Key {
+    validator_prefix(validator)
+        .push(&VALIDATOR_LAST_KNOWN_PRODUCT_EPOCH_KEY.to_owned())
+        .expect("Cannot obtain a storage key")
+}
+
+/// Is storage key for validator's last known rewards product epoch?
+pub fn is_validator_last_known_product_epoch_key(
+    key: &Key,
+) -> Option<&Address> {
+    match &key.segments[..] {
+        [
+            DbKeySeg::AddressSeg(addr),
+            DbKeySeg::StringSeg(prefix),
+            DbKeySeg::AddressSeg(validator),
+            DbKeySeg::StringSeg(key),
+        ] if addr == &ADDRESS
+            && prefix == VALIDATOR_STORAGE_PREFIX
+            && key == VALIDATOR_LAST_KNOWN_PRODUCT_EPOCH_KEY =>
         {
             Some(validator)
         }
@@ -400,6 +493,27 @@ pub fn is_below_capacity_validator_set_key(key: &Key) -> bool {
     matches!(&key.segments[..], [DbKeySeg::AddressSeg(addr), DbKeySeg::StringSeg(key), DbKeySeg::StringSeg(set_type), DbKeySeg::StringSeg(lazy_map), DbKeySeg::StringSeg(data), DbKeySeg::StringSeg(_epoch), DbKeySeg::StringSeg(_), DbKeySeg::StringSeg(_amount), DbKeySeg::StringSeg(_), DbKeySeg::StringSeg(_position)] if addr == &ADDRESS && key == VALIDATOR_SETS_STORAGE_PREFIX && set_type == BELOW_CAPACITY_VALIDATOR_SET_STORAGE_KEY && lazy_map == LAZY_MAP_SUB_KEY && data == lazy_map::DATA_SUBKEY)
 }
 
+/// Storage key prefix for validator sets.
+pub fn validator_set_prefix() -> Key {
+    Key::from(ADDRESS.to_db_key())
+        .push(&VALIDATOR_SET_STORAGE_PREFIX.to_owned())
+        .expect("Cannot obtain a storage key")
+}
+
+/// Storage key prefix for the consensus validator set.
+pub fn consensus_validator_set_prefix() -> Key {
+    validator_set_prefix()
+        .push(&CONSENSUS_VALIDATOR_SET_STORAGE_PREFIX.to_owned())
+        .expect("Cannot obtain a storage key")
+}
+
+/// Storage key for consensus validator set.
+pub fn consensus_validator_set_key() -> Key {
+    consensus_validator_set_prefix()
+        .push(&CONSENSUS_VALIDATOR_SET_STORAGE_KEY.to_owned())
+        .expect("Cannot obtain a storage key")
+}
+
 /// Storage key for total deltas of all validators.
 pub fn total_deltas_key() -> Key {
     Key::from(ADDRESS.to_db_key())
@@ -425,6 +539,50 @@ pub fn is_total_deltas_key(key: &Key) -> Option<&String> {
         }
         _ => None,
     }
+}
+
+/// Storage key for block proposer address of the previous block.
+pub fn last_block_proposer_key() -> Key {
+    Key::from(ADDRESS.to_db_key())
+        .push(&LAST_BLOCK_PROPOSER_STORAGE_KEY.to_owned())
+        .expect("Cannot obtain a storage key")
+}
+
+/// Is storage key for block proposer address of the previous block?
+pub fn is_last_block_proposer_key(key: &Key) -> bool {
+    matches!(&key.segments[..], [DbKeySeg::AddressSeg(addr), DbKeySeg::StringSeg(key)] if addr == &ADDRESS && key == LAST_BLOCK_PROPOSER_STORAGE_KEY)
+}
+
+/// Storage key for block proposer address of the current block.
+pub fn current_block_proposer_key() -> Key {
+    Key::from(ADDRESS.to_db_key())
+        .push(&CURRENT_BLOCK_PROPOSER_STORAGE_KEY.to_owned())
+        .expect("Cannot obtain a storage key")
+}
+
+/// Is storage key for block proposer address of the current block?
+pub fn is_current_block_proposer_key(key: &Key) -> bool {
+    matches!(&key.segments[..], [DbKeySeg::AddressSeg(addr), DbKeySeg::StringSeg(key)] if addr == &ADDRESS && key == CURRENT_BLOCK_PROPOSER_STORAGE_KEY)
+}
+
+/// Storage key for the consensus validator set rewards accumulator.
+pub fn consensus_validator_set_accumulator_key() -> Key {
+    consensus_validator_set_prefix()
+        .push(&CONSENSUS_VALIDATOR_SET_ACCUMULATOR_STORAGE_KEY.to_owned())
+        .expect("Cannot obtain a storage key")
+}
+
+/// Is storage key for the consensus validator set?
+pub fn is_consensus_validator_set_accumulator_key(key: &Key) -> bool {
+    matches!(&key.segments[..], [
+            DbKeySeg::AddressSeg(addr),
+            DbKeySeg::StringSeg(key),
+            DbKeySeg::StringSeg(set),
+            DbKeySeg::StringSeg(field),
+        ] if addr == &ADDRESS
+            && key == VALIDATOR_SET_STORAGE_PREFIX
+            && set == CONSENSUS_VALIDATOR_SET_STORAGE_PREFIX
+            && field == CONSENSUS_VALIDATOR_SET_ACCUMULATOR_STORAGE_KEY)
 }
 
 /// Get validator address from bond key
