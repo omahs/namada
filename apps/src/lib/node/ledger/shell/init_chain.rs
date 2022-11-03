@@ -341,6 +341,16 @@ where
                 .map(|validator| &validator.pos_data),
             current_epoch,
         );
+        pos::init_genesis_storage_NEW(
+            &mut self.storage,
+            &genesis.pos_params,
+            genesis
+                .validators
+                .clone()
+                .into_iter()
+                .map(|validator| validator.pos_data),
+            current_epoch,
+        );
         ibc::init_genesis_storage(&mut self.wl_storage.storage);
 
         // Set the initial validator set
