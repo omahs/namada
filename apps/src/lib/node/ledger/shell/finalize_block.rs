@@ -4,6 +4,7 @@ use namada::ledger::pos::namada_proof_of_stake;
 use namada::ledger::pos::types::into_tm_voting_power;
 use namada::ledger::protocol;
 use namada::ledger::storage_api::StorageRead;
+// use namada::proof_of_stake::validator_deltas_handle;
 use namada::types::storage::{BlockHash, BlockResults, Header};
 use namada::types::token::Amount;
 
@@ -43,6 +44,8 @@ where
         req: shim::request::FinalizeBlock,
     ) -> Result<shim::response::FinalizeBlock> {
         // reset gas meter before we start
+        println!("\nSTART FINALIZE BLOCK\nVALIDATOR SET:");
+
         self.gas_meter.reset();
 
         let mut response = shim::response::FinalizeBlock::default();
