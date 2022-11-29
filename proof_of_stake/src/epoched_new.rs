@@ -7,19 +7,31 @@ use std::ops;
 
 use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use namada_core::ledger::storage_api;
-use namada_core::ledger::storage_api::collections::lazy_map::LazyMap;
-use namada_core::ledger::storage_api::collections::LazyCollection;
+use namada_core::ledger::storage_api::collections::lazy_map::{
+    LazyMap, NestedMap,
+};
+use namada_core::ledger::storage_api::collections::{self, LazyCollection};
 use namada_core::ledger::storage_api::{StorageRead, StorageWrite};
 use namada_core::types::storage::{self, Epoch};
 
 use crate::parameters::PosParams;
 
 /// Discrete epoched data handle
-pub struct Epoched<Data, FutureEpochs, const NUM_PAST_EPOCHS: u64> {
+pub struct Epoched<
+    Data,
+    FutureEpochs,
+    const NUM_PAST_EPOCHS: u64 = 0,
+    SON = collections::Simple,
+> {
     storage_prefix: storage::Key,
     future_epochs: PhantomData<FutureEpochs>,
     data: PhantomData<Data>,
+    phantom_son: PhantomData<SON>,
 }
+
+// Discrete epoched data handle with nested lazy structure
+pub type NestedEpoched<Data, FutureEpochs, const NUM_PAST_EPOCHS: u64 = 0> =
+    Epoched<Data, FutureEpochs, NUM_PAST_EPOCHS, collections::Nested>;
 
 /// Delta epoched data handle
 pub struct EpochedDelta<Data, FutureEpochs, const NUM_PAST_EPOCHS: u64> {
@@ -28,11 +40,10 @@ pub struct EpochedDelta<Data, FutureEpochs, const NUM_PAST_EPOCHS: u64> {
     data: PhantomData<Data>,
 }
 
-impl<Data, FutureEpochs, const NUM_PAST_EPOCHS: u64>
-    Epoched<Data, FutureEpochs, NUM_PAST_EPOCHS>
+impl<Data, FutureEpochs, const NUM_PAST_EPOCHS: u64, SON>
+    Epoched<Data, FutureEpochs, NUM_PAST_EPOCHS, SON>
 where
     FutureEpochs: EpochOffset,
-    Data: BorshSerialize + BorshDeserialize + 'static + Debug,
 {
     /// Open the handle
     pub fn open(key: storage::Key) -> Self {
@@ -40,9 +51,17 @@ where
             storage_prefix: key,
             future_epochs: PhantomData,
             data: PhantomData,
+            phantom_son: PhantomData,
         }
     }
+}
 
+impl<Data, FutureEpochs, const NUM_PAST_EPOCHS: u64>
+    Epoched<Data, FutureEpochs, NUM_PAST_EPOCHS>
+where
+    FutureEpochs: EpochOffset,
+    Data: BorshSerialize + BorshDeserialize + 'static + Debug,
+{
     /// Initialize new epoched data. Sets the head to the given value.
     /// This should only be used at genesis.
     pub fn init_at_genesis<S>(
@@ -213,6 +232,42 @@ where
     fn sub_past_epochs(epoch: Epoch) -> Epoch {
         Epoch(epoch.0.checked_sub(NUM_PAST_EPOCHS).unwrap_or_default())
     }
+}
+
+impl<Data, FutureEpochs, const NUM_PAST_EPOCHS: u64>
+    Epoched<Data, FutureEpochs, NUM_PAST_EPOCHS, collections::Nested>
+where
+    FutureEpochs: EpochOffset,
+    Data: LazyCollection + Debug,
+{
+    pub fn at(&self, key: &Epoch) -> Data {
+        Data::open(self.get_data_handler().get_data_key(key))
+    }
+
+    fn get_data_handler(&self) -> NestedMap<Epoch, Data> {
+        let key = self.storage_prefix.push(&"data".to_owned()).unwrap();
+        NestedMap::open(key)
+    }
+
+    /// Initialize new nested data at the given epoch offset.
+    pub fn init<S>(
+        &self,
+        storage: &mut S,
+        epoch: Epoch,
+    ) -> storage_api::Result<()>
+    where
+        S: StorageWrite + StorageRead,
+    {
+        let key = self.get_last_update_storage_key();
+        storage.write(&key, epoch)
+    }
+
+    fn get_last_update_storage_key(&self) -> storage::Key {
+        self.storage_prefix.push(&"last_update".to_owned()).unwrap()
+    }
+
+    // TODO: we may need an update_data() method, figure out when it should be
+    // called (in at()?)
 }
 
 impl<Data, FutureEpochs, const NUM_PAST_EPOCHS: u64>
