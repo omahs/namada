@@ -56,6 +56,7 @@ use namada::types::{address, storage, token};
 use rust_decimal::Decimal;
 use tokio::time::{Duration, Instant};
 
+use crate::cli::context::ChainContext;
 use crate::cli::{self, args, Context};
 use crate::client::tendermint_rpc_types::TxResponse;
 use crate::client::tx::{
@@ -154,7 +155,7 @@ pub async fn query_results(args: args::Query) -> Vec<BlockResults> {
 /// transactions crediting/debiting the given owner. If token is specified, then
 /// restrict set to only transactions involving the given token.
 pub async fn query_tx_deltas(
-    ctx: &mut Context,
+    ctx: &mut ChainContext,
     ledger_address: TendermintAddress,
     query_owner: &Option<BalanceOwner>,
     query_token: &Option<Address>,
@@ -266,11 +267,12 @@ pub async fn query_tx_deltas(
 
 /// Query the specified accepted transfers from the ledger
 pub async fn query_transfers(mut ctx: Context, args: args::QueryTransfers) {
-    let query_token = args.token.as_ref().map(|x| ctx.get(x));
-    let query_owner = args.owner.as_ref().map(|x| ctx.get_cached(x));
+    let chain_ctx = ctx.borrow_mut_chain_or_exit();
+    let query_token = args.token.as_ref().map(|x| chain_ctx.get(x));
+    let query_owner = args.owner.as_ref().map(|x| chain_ctx.get_cached(x));
     // Obtain the effects of all shielded and transparent transactions
     let transfers = query_tx_deltas(
-        &mut ctx,
+        chain_ctx,
         args.query.ledger_address.clone(),
         &query_owner,
         &query_token,
@@ -278,7 +280,7 @@ pub async fn query_transfers(mut ctx: Context, args: args::QueryTransfers) {
     .await;
     // To facilitate lookups of human-readable token names
     let tokens = tokens();
-    let vks = ctx.wallet.get_viewing_keys();
+    let vks = chain_ctx.wallet.get_viewing_keys();
     // To enable ExtendedFullViewingKeys to be displayed instead of ViewingKeys
     let fvk_map: HashMap<_, _> = vks
         .values()
@@ -303,7 +305,7 @@ pub async fn query_transfers(mut ctx: Context, args: args::QueryTransfers) {
         for (acc, amt) in tx_delta {
             // Realize the rewards that would have been attained upon the
             // transaction's reception
-            let amt = ctx
+            let amt = chain_ctx
                 .shielded
                 .compute_exchanged_amount(
                     client.clone(),
@@ -313,8 +315,10 @@ pub async fn query_transfers(mut ctx: Context, args: args::QueryTransfers) {
                 )
                 .await
                 .0;
-            let dec =
-                ctx.shielded.decode_amount(client.clone(), amt, epoch).await;
+            let dec = chain_ctx
+                .shielded
+                .decode_amount(client.clone(), amt, epoch)
+                .await;
             shielded_accounts.insert(acc, dec);
         }
         // Check if this transfer pertains to the supplied token
@@ -436,32 +440,33 @@ pub async fn query_raw_bytes(_ctx: Context, args: args::QueryRawBytes) {
 
 /// Query token balance(s)
 pub async fn query_balance(mut ctx: Context, args: args::QueryBalance) {
+    let chain_ctx = ctx.borrow_mut_chain_or_exit();
     // Query the balances of shielded or transparent account types depending on
     // the CLI arguments
-    match args.owner.as_ref().map(|x| ctx.get_cached(x)) {
+    match args.owner.as_ref().map(|x| chain_ctx.get_cached(x)) {
         Some(BalanceOwner::FullViewingKey(_viewing_key)) => {
-            query_shielded_balance(&mut ctx, args).await
+            query_shielded_balance(chain_ctx, args).await
         }
         Some(BalanceOwner::Address(_owner)) => {
-            query_transparent_balance(&mut ctx, args).await
+            query_transparent_balance(chain_ctx, args).await
         }
         Some(BalanceOwner::PaymentAddress(_owner)) => {
-            query_pinned_balance(&mut ctx, args).await
+            query_pinned_balance(chain_ctx, args).await
         }
         None => {
             // Print pinned balance
-            query_pinned_balance(&mut ctx, args.clone()).await;
+            query_pinned_balance(chain_ctx, args.clone()).await;
             // Print shielded balance
-            query_shielded_balance(&mut ctx, args.clone()).await;
+            query_shielded_balance(chain_ctx, args.clone()).await;
             // Then print transparent balance
-            query_transparent_balance(&mut ctx, args).await;
+            query_transparent_balance(chain_ctx, args).await;
         }
     };
 }
 
 /// Query token balance(s)
 pub async fn query_transparent_balance(
-    ctx: &mut Context,
+    ctx: &mut ChainContext,
     args: args::QueryBalance,
 ) {
     let client = HttpClient::new(args.query.ledger_address).unwrap();
@@ -541,7 +546,10 @@ pub async fn query_transparent_balance(
 }
 
 /// Query the token pinned balance(s)
-pub async fn query_pinned_balance(ctx: &mut Context, args: args::QueryBalance) {
+pub async fn query_pinned_balance(
+    ctx: &mut ChainContext,
+    args: args::QueryBalance,
+) {
     // Map addresses to token names
     let tokens = address::tokens();
     let owners = if let Some(pa) = args
@@ -679,7 +687,7 @@ pub async fn query_pinned_balance(ctx: &mut Context, args: args::QueryBalance) {
 }
 
 fn print_balances(
-    ctx: &Context,
+    ctx: &ChainContext,
     balances: impl Iterator<Item = (storage::Key, token::Amount)>,
     token: &Address,
     target: Option<&Address>,
@@ -871,7 +879,7 @@ pub fn value_by_address(
 
 /// Query token shielded balance(s)
 pub async fn query_shielded_balance(
-    ctx: &mut Context,
+    ctx: &mut ChainContext,
     args: args::QueryBalance,
 ) {
     // Used to control whether balances for all keys or a specific key are
@@ -1370,12 +1378,13 @@ pub async fn query_protocol_parameters(
 
 /// Query PoS bond(s)
 pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
+    let chain_ctx = ctx.borrow_chain_or_exit();
     let epoch = query_epoch(args.query.clone()).await;
     let client = HttpClient::new(args.query.ledger_address).unwrap();
     match (args.owner, args.validator) {
         (Some(owner), Some(validator)) => {
-            let source = ctx.get(&owner);
-            let validator = ctx.get(&validator);
+            let source = chain_ctx.get(&owner);
+            let validator = chain_ctx.get(&validator);
             // Find owner's delegations to the given validator
             let bond_id = pos::BondId { source, validator };
             let bond_key = pos::bond_key(&bond_id);
@@ -1431,7 +1440,7 @@ pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
             }
         }
         (None, Some(validator)) => {
-            let validator = ctx.get(&validator);
+            let validator = chain_ctx.get(&validator);
             // Find validator's self-bonds
             let bond_id = pos::BondId {
                 source: validator.clone(),
@@ -1478,7 +1487,7 @@ pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
             }
         }
         (Some(owner), None) => {
-            let owner = ctx.get(&owner);
+            let owner = chain_ctx.get(&owner);
             // Find owner's bonds to any validator
             let bonds_prefix = pos::bonds_for_source_prefix(&owner);
             let bonds =
@@ -1717,6 +1726,7 @@ pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
 
 /// Query PoS bonded stake
 pub async fn query_bonded_stake(ctx: Context, args: args::QueryBondedStake) {
+    let chain_ctx = ctx.borrow_chain_or_exit();
     let epoch = match args.epoch {
         Some(epoch) => epoch,
         None => query_epoch(args.query.clone()).await,
@@ -1735,7 +1745,7 @@ pub async fn query_bonded_stake(ctx: Context, args: args::QueryBondedStake) {
 
     match args.validator {
         Some(validator) => {
-            let validator = ctx.get(&validator);
+            let validator = chain_ctx.get(&validator);
             // Find bonded stake for the given validator
             let validator_deltas_key = pos::validator_deltas_key(&validator);
             let validator_deltas = query_storage_value::<pos::ValidatorDeltas>(
@@ -1820,12 +1830,13 @@ pub async fn query_commission_rate(
     ctx: Context,
     args: args::QueryCommissionRate,
 ) {
+    let chain_ctx = ctx.borrow_chain_or_exit();
     let epoch = match args.epoch {
         Some(epoch) => epoch,
         None => query_epoch(args.query.clone()).await,
     };
     let client = HttpClient::new(args.query.ledger_address.clone()).unwrap();
-    let validator = ctx.get(&args.validator);
+    let validator = chain_ctx.get(&args.validator);
     let is_validator =
         is_validator(&validator, args.query.ledger_address).await;
 
@@ -1873,10 +1884,11 @@ pub async fn query_commission_rate(
 
 /// Query PoS slashes
 pub async fn query_slashes(ctx: Context, args: args::QuerySlashes) {
+    let chain_ctx = ctx.borrow_chain_or_exit();
     let client = HttpClient::new(args.query.ledger_address).unwrap();
     match args.validator {
         Some(validator) => {
-            let validator = ctx.get(&validator);
+            let validator = chain_ctx.get(&validator);
             // Find slashes for the given validator
             let slashes_key = pos::validator_slashes_key(&validator);
             let slashes =
@@ -2183,8 +2195,9 @@ fn process_unbonds_query(
 
 /// Query for all conversions.
 pub async fn query_conversions(ctx: Context, args: args::QueryConversions) {
+    let chain_ctx = ctx.borrow_chain_or_exit();
     // The chosen token type of the conversions
-    let target_token = args.token.as_ref().map(|x| ctx.get(x));
+    let target_token = args.token.as_ref().map(|x| chain_ctx.get(x));
     // To facilitate human readable token addresses
     let tokens = address::tokens();
     let client = HttpClient::new(args.query.ledger_address).unwrap();
@@ -2931,7 +2944,7 @@ pub async fn get_governance_parameters(client: &HttpClient) -> GovParams {
 
 /// Try to find an alias for a given address from the wallet. If not found,
 /// formats the address into a string.
-fn lookup_alias(ctx: &Context, addr: &Address) -> String {
+fn lookup_alias(ctx: &ChainContext, addr: &Address) -> String {
     match ctx.wallet.find_alias(addr) {
         Some(alias) => format!("{}", alias),
         None => format!("{}", addr),
