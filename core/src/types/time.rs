@@ -3,9 +3,11 @@
 use std::convert::{TryFrom, TryInto};
 use std::fmt::Display;
 use std::ops::{Add, Sub};
+use std::str::FromStr;
 
 use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 pub use chrono::{DateTime, Duration, TimeZone, Utc};
+use serde::{Deserialize, Serialize};
 
 /// Check if the given `duration` has passed since the given `start.
 pub fn duration_passed(
@@ -26,6 +28,8 @@ pub fn duration_passed(
     PartialOrd,
     Ord,
     Hash,
+    Serialize,
+    Deserialize,
     BorshSerialize,
     BorshDeserialize,
     BorshSchema,
@@ -69,6 +73,8 @@ impl Display for DurationSecs {
     PartialOrd,
     Ord,
     Hash,
+    Serialize,
+    Deserialize,
     BorshSerialize,
     BorshDeserialize,
     BorshSchema,
@@ -90,7 +96,9 @@ impl From<std::time::Duration> for DurationNanos {
 }
 
 /// An RFC 3339 timestamp (e.g., "1970-01-01T00:00:00Z").
-#[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Clone, Debug, Deserialize, Serialize, BorshDeserialize, BorshSerialize,
+)]
 pub struct Rfc3339String(pub String);
 
 /// A duration in seconds precision.
@@ -139,7 +147,7 @@ impl BorshSerialize for DateTimeUtc {
         writer: &mut W,
     ) -> std::io::Result<()> {
         let raw = self.0.to_rfc3339();
-        raw.serialize(writer)
+        BorshSerialize::serialize(&raw, writer)
     }
 }
 
@@ -169,6 +177,21 @@ impl BorshSchema for DateTimeUtc {
 
     fn declaration() -> borsh::schema::Declaration {
         "DateTimeUtc".into()
+    }
+}
+
+impl Display for DateTimeUtc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.to_rfc3339())
+    }
+}
+
+impl FromStr for DateTimeUtc {
+    type Err = chrono::ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parsed: DateTime<Utc> = FromStr::from_str(s)?;
+        Ok(Self::from(parsed))
     }
 }
 
@@ -249,5 +272,12 @@ impl TryFrom<crate::tendermint::time::Time> for DateTimeUtc {
 
     fn try_from(t: crate::tendermint::time::Time) -> Result<Self, Self::Error> {
         Rfc3339String(t.to_rfc3339()).try_into()
+    }
+}
+
+#[cfg(any(feature = "tendermint", feature = "tendermint-abcipp"))]
+impl From<crate::tendermint::Timeout> for DurationNanos {
+    fn from(val: crate::tendermint::Timeout) -> Self {
+        Self::from(std::time::Duration::from(val))
     }
 }
