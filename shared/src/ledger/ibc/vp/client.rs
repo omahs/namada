@@ -15,17 +15,14 @@ use super::super::storage::{
 };
 use super::{Ibc, StateChange};
 use crate::ibc::clients::ics07_tendermint::consensus_state::ConsensusState as TmConsensusState;
-use crate::ibc::core::ics02_client::client_consensus::{
-    AnyConsensusState, ConsensusState,
-};
-use crate::ibc::core::ics02_client::client_def::{AnyClient, ClientDef};
-use crate::ibc::core::ics02_client::client_state::AnyClientState;
+use crate::ibc::core::ics02_client::client_state::ClientState;
 use crate::ibc::core::ics02_client::client_type::ClientType;
+use crate::ibc::core::ics02_client::consensus_state::ConsensusState;
 use crate::ibc::core::ics02_client::context::ClientReader;
 use crate::ibc::core::ics02_client::error::Error as Ics02Error;
 use crate::ibc::core::ics02_client::height::Height;
-use crate::ibc::core::ics02_client::msgs::update_client::MsgUpdateAnyClient;
-use crate::ibc::core::ics02_client::msgs::upgrade_client::MsgUpgradeAnyClient;
+use crate::ibc::core::ics02_client::msgs::update_client::MsgUpdateClient;
+use crate::ibc::core::ics02_client::msgs::upgrade_client::MsgUpgradeClient;
 use crate::ibc::core::ics02_client::msgs::ClientMsg;
 use crate::ibc::core::ics04_channel::context::ChannelReader;
 use crate::ibc::core::ics23_commitment::commitment::CommitmentRoot;
@@ -128,7 +125,11 @@ where
                         ))
                     })?;
                 let timestamp_post = self
-                    .client_update_time(client_id, Height::default())
+                    .client_update_time(
+                        client_id,
+                        Height::new(0, 0)
+                            .expect("Height::new shouldn't failed"),
+                    )
                     .map_err(|e| {
                         Error::InvalidTimestamp(format!(
                             "Reading the posterior client update time failed: \
@@ -151,7 +152,10 @@ where
                         ))
                     })?;
                 let height_post = self
-                    .client_update_height(client_id, Height::default())
+                    .client_update_height(
+                        client_id,
+                        Height::new(0, 0).expect("Height::new shouldn't faile"),
+                    )
                     .map_err(|e| {
                         Error::InvalidTimestamp(format!(
                             "Reading the posterior client update height \
@@ -220,7 +224,8 @@ where
             )));
         }
 
-        let event = make_create_client_event(client_id, &msg);
+        let event = make_create_client_event(client_id, &msg)
+            .map_err(|e| Error::IbcEvent(e.to_string()))?;
         self.check_emitted_event(event)
             .map_err(|e| Error::IbcEvent(e.to_string()))
     }

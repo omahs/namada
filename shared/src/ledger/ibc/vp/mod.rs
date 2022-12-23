@@ -18,13 +18,12 @@ use namada_core::ledger::ibc::storage::{
 use namada_core::ledger::storage::{self as ledger_storage, StorageHasher};
 use namada_core::proto::SignedTxData;
 use namada_core::types::address::{Address, InternalAddress};
-use namada_core::types::ibc::IbcEvent as WrappedIbcEvent;
+use namada_core::types::ibc::IbcEvent;
 use namada_core::types::storage::Key;
 use thiserror::Error;
 pub use token::{Error as IbcTokenError, IbcToken};
 
 use crate::ibc::core::ics02_client::context::ClientReader;
-use crate::ibc::events::IbcEvent;
 use crate::ledger::native_vp::{self, Ctx, NativeVp, VpEnv};
 use crate::vm::WasmCacheAccess;
 
@@ -234,9 +233,7 @@ where
     fn check_emitted_event(&self, expected_event: IbcEvent) -> Result<()> {
         match self.ctx.write_log.get_ibc_event() {
             Some(event) => {
-                let expected = WrappedIbcEvent::try_from(expected_event)
-                    .map_err(|e| Error::IbcEvent(e.to_string()))?;
-                if *event == expected {
+                if *event == expected_event {
                     Ok(())
                 } else {
                     Err(Error::IbcEvent(format!(

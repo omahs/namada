@@ -9,10 +9,7 @@ use super::super::storage::{
 };
 use super::{Ibc, StateChange};
 use crate::ibc::core::ics04_channel::context::ChannelReader;
-use crate::ibc::core::ics05_port::capabilities::{
-    Capability, CapabilityName, PortCapability,
-};
-use crate::ibc::core::ics05_port::context::{CapabilityReader, PortReader};
+use crate::ibc::core::ics05_port::context::PortReader;
 use crate::ibc::core::ics05_port::error::Error as Ics05Error;
 use crate::ibc::core::ics24_host::identifier::PortId;
 use crate::ibc::core::ics26_routing::context::ModuleId;
@@ -125,8 +122,8 @@ where
         })
     }
 
-    fn get_port_by_capability(&self, cap: &Capability) -> Result<PortId> {
-        let key = capability_key(cap.index());
+    fn get_port_by_capability(&self, cap_index: u64) -> Result<PortId> {
+        let key = capability_key(cap_index);
         match self.ctx.read_bytes_post(&key) {
             Ok(Some(value)) => {
                 let id = std::str::from_utf8(&value).map_err(|e| {
@@ -159,10 +156,7 @@ where
     H: 'static + StorageHasher,
     CA: 'static + WasmCacheAccess,
 {
-    fn lookup_module_by_port(
-        &self,
-        port_id: &PortId,
-    ) -> Ics05Result<(ModuleId, PortCapability)> {
+    fn lookup_module_by_port(&self, port_id: &PortId) -> Ics05Result<ModuleId> {
         let key = port_key(port_id);
         match self.ctx.read_bytes_post(&key) {
             Ok(Some(value)) => {
@@ -172,42 +166,10 @@ where
                 let index = u64::from_be_bytes(index);
                 let module_id = ModuleId::new(MODULE_ID.into())
                     .expect("Creating the module ID shouldn't fail");
-                Ok((module_id, Capability::from(index).into()))
+                Ok(module_id)
             }
             Ok(None) => Err(Ics05Error::unknown_port(port_id.clone())),
             Err(_) => Err(Ics05Error::implementation_specific()),
-        }
-    }
-}
-
-impl<'a, DB, H, CA> CapabilityReader for Ibc<'a, DB, H, CA>
-where
-    DB: 'static + ledger_storage::DB + for<'iter> ledger_storage::DBIter<'iter>,
-    H: 'static + StorageHasher,
-    CA: 'static + WasmCacheAccess,
-{
-    fn get_capability(&self, name: &CapabilityName) -> Ics05Result<Capability> {
-        let port_id = get_port_id(name)?;
-        let (_, capability) = self.lookup_module_by_port(&port_id)?;
-        Ok(capability.into())
-    }
-
-    fn authenticate_capability(
-        &self,
-        name: &CapabilityName,
-        capability: &Capability,
-    ) -> Ics05Result<()> {
-        // check if the capability can be read by the name and the port ID is
-        // read by the capability
-        if *capability == self.get_capability(name)?
-            && self
-                .get_port_by_capability(capability)
-                .map_err(|_| Ics05Error::implementation_specific())?
-                == get_port_id(name)?
-        {
-            Ok(())
-        } else {
-            Err(Ics05Error::unknown_port(get_port_id(name)?))
         }
     }
 }

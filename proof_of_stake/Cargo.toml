@@ -24,7 +24,7 @@ derivative = "2.2.0"
 proptest = {git = "https://github.com/heliaxdev/proptest", branch = "tomas/sm", optional = true}
 rust_decimal = { version = "1.26.1", features = ["borsh"] }
 rust_decimal_macros = "1.26.1"
-thiserror = "1.0.30"
+thiserror = "1.0.37"
 tracing = "0.1.30"
 
 [dev-dependencies]

@@ -5,9 +5,9 @@ use std::str::FromStr;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::ibc::applications::transfer::PrefixedCoin;
 use crate::ibc::core::ics02_client::height::Height;
 use crate::ibc::core::ics04_channel::packet::Sequence;
-use crate::ibc::core::ics05_port::capabilities::Capability;
 use crate::ibc::core::ics24_host::identifier::{
     ChannelId, ClientId, ConnectionId, PortChannelId, PortId,
 };
@@ -19,6 +19,7 @@ use crate::ibc::core::ics24_host::path::{
 use crate::ibc::core::ics24_host::Path;
 use crate::types::address::{Address, InternalAddress, HASH_LEN};
 use crate::types::storage::{self, DbKeySeg, Key, KeySeg};
+use crate::types::token::Amount;
 
 const CLIENTS_COUNTER: &str = "clients/counter";
 const CONNECTIONS_COUNTER: &str = "connections/counter";
@@ -164,8 +165,8 @@ pub fn client_state_key(client_id: &ClientId) -> Key {
 pub fn consensus_state_key(client_id: &ClientId, height: Height) -> Key {
     let path = Path::ClientConsensusState(ClientConsensusStatePath {
         client_id: client_id.clone(),
-        epoch: height.revision_number,
-        height: height.revision_height,
+        epoch: height.revision_number(),
+        height: height.revision_height(),
     });
     ibc_key(path.to_string())
         .expect("Creating a key for the consensus state shouldn't fail")
@@ -196,7 +197,7 @@ pub fn connection_key(conn_id: &ConnectionId) -> Key {
 pub fn channel_key(port_channel_id: &PortChannelId) -> Key {
     let path = Path::ChannelEnds(ChannelEndsPath(
         port_channel_id.port_id.clone(),
-        port_channel_id.channel_id,
+        port_channel_id.channel_id.clone(),
     ));
     ibc_key(path.to_string())
         .expect("Creating a key for the channel shouldn't fail")
@@ -219,7 +220,7 @@ pub fn capability_key(index: u64) -> Key {
 pub fn next_sequence_send_key(port_channel_id: &PortChannelId) -> Key {
     let path = Path::SeqSends(SeqSendsPath(
         port_channel_id.port_id.clone(),
-        port_channel_id.channel_id,
+        port_channel_id.channel_id.clone(),
     ));
     ibc_key(path.to_string())
         .expect("Creating a key for nextSequenceSend shouldn't fail")
@@ -229,7 +230,7 @@ pub fn next_sequence_send_key(port_channel_id: &PortChannelId) -> Key {
 pub fn next_sequence_recv_key(port_channel_id: &PortChannelId) -> Key {
     let path = Path::SeqRecvs(SeqRecvsPath(
         port_channel_id.port_id.clone(),
-        port_channel_id.channel_id,
+        port_channel_id.channel_id.clone(),
     ));
     ibc_key(path.to_string())
         .expect("Creating a key for nextSequenceRecv shouldn't fail")
@@ -239,7 +240,7 @@ pub fn next_sequence_recv_key(port_channel_id: &PortChannelId) -> Key {
 pub fn next_sequence_ack_key(port_channel_id: &PortChannelId) -> Key {
     let path = Path::SeqAcks(SeqAcksPath(
         port_channel_id.port_id.clone(),
-        port_channel_id.channel_id,
+        port_channel_id.channel_id.clone(),
     ));
     ibc_key(path.to_string())
         .expect("Creating a key for nextSequenceAck shouldn't fail")
@@ -253,7 +254,7 @@ pub fn commitment_key(
 ) -> Key {
     let path = Path::Commitments(CommitmentsPath {
         port_id: port_id.clone(),
-        channel_id: *channel_id,
+        channel_id: channel_id.clone(),
         sequence,
     });
     ibc_key(path.to_string())
@@ -268,7 +269,7 @@ pub fn receipt_key(
 ) -> Key {
     let path = Path::Receipts(ReceiptsPath {
         port_id: port_id.clone(),
-        channel_id: *channel_id,
+        channel_id: channel_id.clone(),
         sequence,
     });
     ibc_key(path.to_string())
@@ -283,7 +284,7 @@ pub fn ack_key(
 ) -> Key {
     let path = Path::Acks(AcksPath {
         port_id: port_id.clone(),
-        channel_id: *channel_id,
+        channel_id: channel_id.clone(),
         sequence,
     });
     ibc_key(path.to_string())
@@ -464,9 +465,9 @@ pub fn port_id(key: &Key) -> Result<PortId> {
     }
 }
 
-/// Returns a capability from the given capability key
+/// Returns a capability index from the given capability key
 /// `#IBC/capabilities/<index>`
-pub fn capability(key: &Key) -> Result<Capability> {
+pub fn capability(key: &Key) -> Result<u64> {
     match &key.segments[..] {
         [
             DbKeySeg::AddressSeg(addr),
@@ -482,7 +483,7 @@ pub fn capability(key: &Key) -> Result<Capability> {
                     key, e
                 ))
             })?;
-            Ok(Capability::from(index))
+            Ok(index)
         }
         _ => Err(Error::InvalidPortCapability(format!(
             "The key doesn't have a capability index: Key {}",
@@ -512,15 +513,22 @@ pub fn ibc_account_prefix(
         .expect("Cannot obtain a storage key")
 }
 
-/// Token address from the denom string
-pub fn token(denom: impl AsRef<str>) -> Result<Address> {
-    let token_str = denom.as_ref().split('/').last().ok_or_else(|| {
-        Error::Denom(format!("No token was specified: {}", denom.as_ref()))
-    })?;
-    Address::decode(token_str).map_err(|e| {
+/// Token address from the coin
+pub fn token(coin: &PrefixedCoin) -> Result<Address> {
+    Address::decode(coin.denom.base_denom.as_str()).map_err(|e| {
         Error::Denom(format!(
             "Invalid token address: token {}, error {}",
-            token_str, e
+            coin.denom.base_denom, e
+        ))
+    })
+}
+
+/// Token amount from the coin
+pub fn amount(coin: &PrefixedCoin) -> Result<Amount> {
+    Amount::from_str(&coin.amount.to_string()).map_err(|e| {
+        Error::Denom(format!(
+            "Decoding the amount failed: amount {}, error {}",
+            coin.amount, e
         ))
     })
 }
@@ -558,9 +566,9 @@ pub fn calc_hash(denom: impl AsRef<str>) -> String {
 }
 
 /// Key's prefix of the received token over IBC
-pub fn ibc_token_prefix(denom: impl AsRef<str>) -> Result<Key> {
-    let token = token(&denom)?;
-    let hash = calc_hash(&denom);
+pub fn ibc_token_prefix(coin: &PrefixedCoin) -> Result<Key> {
+    let token = token(coin)?;
+    let hash = calc_hash(&coin.denom.to_string());
     let ibc_token = Address::Internal(InternalAddress::IbcToken(hash));
     let prefix = Key::from(token.to_db_key())
         .push(&MULTITOKEN_STORAGE_KEY.to_owned())

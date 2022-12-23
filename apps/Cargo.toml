@@ -71,7 +71,7 @@ namada = {path = "../shared", default-features = false, features = ["wasm-runtim
 ark-serialize = "0.3.0"
 ark-std = "0.3.0"
 # branch = "bat/arse-merkle-tree"
-arse-merkle-tree = {package = "sparse-merkle-tree", git = "https://github.com/heliaxdev/sparse-merkle-tree", rev = "04ad1eeb28901b57a7599bbe433b3822965dabe8", features = ["std", "borsh"]}
+arse-merkle-tree = {package = "sparse-merkle-tree", git = "https://github.com/heliaxdev/sparse-merkle-tree", rev = "5f0036df3ff8141dc1f88c79754a93cf8ac1f103", features = ["std", "borsh"]}
 async-std = {version = "=1.11.0", features = ["unstable"]}
 async-trait = "0.1.51"
 base64 = "0.13.0"
@@ -87,8 +87,8 @@ config = "0.11.0"
 data-encoding = "2.3.2"
 derivative = "2.2.0"
 ed25519-consensus = "1.2.0"
-ferveo = {git = "https://github.com/anoma/ferveo"}
-ferveo-common = {git = "https://github.com/anoma/ferveo"}
+ferveo = {path = "../../ferveo/ferveo"}
+ferveo-common = {path = "../../ferveo/ferveo-common"}
 eyre = "0.6.5"
 flate2 = "1.0.22"
 file-lock = "2.0.2"
@@ -101,8 +101,8 @@ num-traits = "0.2.14"
 num_cpus = "1.13.0"
 once_cell = "1.8.0"
 orion = "0.16.0"
-prost = "0.9.0"
-prost-types = "0.9.0"
+prost = "0.11"
+prost-types = "0.11"
 rand = {version = "0.8", default-features = false}
 rand_core = {version = "0.6", default-features = false}
 rayon = "=1.5.3"
@@ -120,15 +120,15 @@ signal-hook = "0.3.9"
 sysinfo = {version = "=0.21.1", default-features = false}
 tar = "0.4.37"
 # temporarily using fork work-around
-tendermint-abcipp = {package = "tendermint", git = "https://github.com/heliaxdev/tendermint-rs", rev = "95c52476bc37927218374f94ac8e2a19bd35bec9", optional = true}
-tendermint-config-abcipp = {package = "tendermint-config", git = "https://github.com/heliaxdev/tendermint-rs", rev = "95c52476bc37927218374f94ac8e2a19bd35bec9", optional = true}
-tendermint-proto-abcipp = {package = "tendermint-proto", git = "https://github.com/heliaxdev/tendermint-rs", rev = "95c52476bc37927218374f94ac8e2a19bd35bec9", optional = true}
-tendermint-rpc-abcipp = {package = "tendermint-rpc", git = "https://github.com/heliaxdev/tendermint-rs", rev = "95c52476bc37927218374f94ac8e2a19bd35bec9", features = ["http-client", "websocket-client"], optional = true}
+tendermint-abcipp = {package = "tendermint", git = "https://github.com/heliaxdev/tendermint-rs", rev = "a3a0ad5f07d380976bbd5321239aec9cc3a8f916", optional = true}
+tendermint-config-abcipp = {package = "tendermint-config", git = "https://github.com/heliaxdev/tendermint-rs", rev = "a3a0ad5f07d380976bbd5321239aec9cc3a8f916", optional = true}
+tendermint-proto-abcipp = {package = "tendermint-proto", git = "https://github.com/heliaxdev/tendermint-rs", rev = "a3a0ad5f07d380976bbd5321239aec9cc3a8f916", optional = true}
+tendermint-rpc-abcipp = {package = "tendermint-rpc", git = "https://github.com/heliaxdev/tendermint-rs", rev = "a3a0ad5f07d380976bbd5321239aec9cc3a8f916", features = ["http-client", "websocket-client"], optional = true}
 tendermint = {version = "0.23.6", optional = true}
 tendermint-config = {version = "0.23.6", optional = true}
 tendermint-proto = {version = "0.23.6", optional = true}
 tendermint-rpc = {version = "0.23.6", features = ["http-client", "websocket-client"], optional = true}
-thiserror = "1.0.30"
+thiserror = "1.0.37"
 tokio = {version = "1.8.2", features = ["full"]}
 toml = "0.5.8"
 tonic = "0.6.1"

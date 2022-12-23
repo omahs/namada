@@ -2,34 +2,39 @@
 
 use std::str::FromStr;
 
+use prost::Message;
 use sha2::Digest;
 use thiserror::Error;
 
-use crate::ibc::applications::ics20_fungible_token_transfer::msgs::transfer::MsgTransfer;
+use crate::ibc::applications::transfer::acknowledgement::{
+    Acknowledgement, ACK_ERR_STR,
+};
+use crate::ibc::applications::transfer::msgs::transfer::MsgTransfer;
+use crate::ibc::applications::transfer::packet::PacketData;
+use crate::ibc::applications::transfer::{
+    is_receiver_chain_source, is_sender_chain_source, Amount as TransferAmount,
+    PrefixedCoin, PrefixedDenom, TracePrefix,
+};
+use crate::ibc::clients::ics07_tendermint::client_state::ClientState as TmClientState;
 use crate::ibc::clients::ics07_tendermint::consensus_state::ConsensusState as TmConsensusState;
-use crate::ibc::core::ics02_client::client_consensus::{
-    AnyConsensusState, ConsensusState,
-};
-use crate::ibc::core::ics02_client::client_state::{
-    AnyClientState, ClientState,
-};
+use crate::ibc::clients::ics07_tendermint::header::Header as TmHeader;
+use crate::ibc::core::ics02_client::client_state::ClientState;
 use crate::ibc::core::ics02_client::client_type::ClientType;
 use crate::ibc::core::ics02_client::events::{
-    Attributes as ClientAttributes, CreateClient, UpdateClient, UpgradeClient,
+    CreateClient, UpdateClient, UpgradeClient,
 };
-use crate::ibc::core::ics02_client::header::{AnyHeader, Header};
+use crate::ibc::core::ics02_client::header::Header;
 use crate::ibc::core::ics02_client::height::Height;
-use crate::ibc::core::ics02_client::msgs::create_client::MsgCreateAnyClient;
-use crate::ibc::core::ics02_client::msgs::update_client::MsgUpdateAnyClient;
-use crate::ibc::core::ics02_client::msgs::upgrade_client::MsgUpgradeAnyClient;
+use crate::ibc::core::ics02_client::msgs::create_client::MsgCreateClient;
+use crate::ibc::core::ics02_client::msgs::update_client::MsgUpdateClient;
+use crate::ibc::core::ics02_client::msgs::upgrade_client::MsgUpgradeClient;
 use crate::ibc::core::ics02_client::msgs::ClientMsg;
 use crate::ibc::core::ics03_connection::connection::{
     ConnectionEnd, Counterparty as ConnCounterparty, State as ConnState,
 };
 use crate::ibc::core::ics03_connection::events::{
-    Attributes as ConnectionAttributes, OpenAck as ConnOpenAck,
-    OpenConfirm as ConnOpenConfirm, OpenInit as ConnOpenInit,
-    OpenTry as ConnOpenTry,
+    OpenAck as ConnOpenAck, OpenConfirm as ConnOpenConfirm,
+    OpenInit as ConnOpenInit, OpenTry as ConnOpenTry,
 };
 use crate::ibc::core::ics03_connection::msgs::conn_open_ack::MsgConnectionOpenAck;
 use crate::ibc::core::ics03_connection::msgs::conn_open_confirm::MsgConnectionOpenConfirm;
@@ -58,24 +63,30 @@ use crate::ibc::core::ics04_channel::msgs::timeout::MsgTimeout;
 use crate::ibc::core::ics04_channel::msgs::timeout_on_close::MsgTimeoutOnClose;
 use crate::ibc::core::ics04_channel::msgs::{ChannelMsg, PacketMsg};
 use crate::ibc::core::ics04_channel::packet::{Packet, Sequence};
+use crate::ibc::core::ics04_channel::timeout::TimeoutHeight;
 use crate::ibc::core::ics23_commitment::commitment::CommitmentPrefix;
 use crate::ibc::core::ics24_host::error::ValidationError as Ics24Error;
 use crate::ibc::core::ics24_host::identifier::{
     ChannelId, ClientId, ConnectionId, PortChannelId, PortId,
 };
 use crate::ibc::core::ics26_routing::msgs::Ics26Envelope;
-use crate::ibc::events::IbcEvent;
 #[cfg(any(feature = "ibc-mocks-abcipp", feature = "ibc-mocks"))]
-use crate::ibc::mock::client_state::{MockClientState, MockConsensusState};
+use crate::ibc::mock::client_state::MockClientState;
+#[cfg(any(feature = "ibc-mocks-abcipp", feature = "ibc-mocks"))]
+use crate::ibc::mock::consensus_state::MockConsensusState;
+#[cfg(any(feature = "ibc-mocks-abcipp", feature = "ibc-mocks"))]
+use crate::ibc::mock::header::MockHeader;
 use crate::ibc::timestamp::Timestamp;
+use crate::ibc_proto::google::protobuf::Any;
+use crate::ibc_proto::protobuf::{Error as IbcProtobufError, Protobuf};
 use crate::ledger::ibc::data::{
-    Error as IbcDataError, FungibleTokenPacketData, IbcMessage, PacketAck,
-    PacketReceipt,
+    Error as IbcDataError, IbcMessage, PacketReceipt,
 };
 use crate::ledger::ibc::storage;
 use crate::ledger::storage_api;
 use crate::tendermint::Time;
-use crate::tendermint_proto::{Error as ProtoError, Protobuf};
+use crate::tendermint_proto::abci::Event as AbciEvent;
+use crate::tendermint_proto::Protobuf as TmProtobuf;
 use crate::types::address::{Address, InternalAddress};
 use crate::types::ibc::IbcEvent as NamadaIbcEvent;
 use crate::types::storage::{BlockHeight, Key};
@@ -95,8 +106,10 @@ pub enum Error {
     ClientUpdate(String),
     #[error("IBC data error: {0}")]
     IbcData(IbcDataError),
+    #[error("Decoding prost data error: {0}")]
+    Decoding(prost::DecodeError),
     #[error("Decoding IBC data error: {0}")]
-    Decoding(ProtoError),
+    IbcDecoding(IbcProtobufError),
     #[error("Client error: {0}")]
     Client(String),
     #[error("Connection error: {0}")]
@@ -182,62 +195,65 @@ pub trait IbcActions {
         tx_data: &[u8],
     ) -> std::result::Result<(), Self::Error> {
         let ibc_msg = IbcMessage::decode(tx_data).map_err(Error::IbcData)?;
-        match &ibc_msg.0 {
-            Ics26Envelope::Ics2Msg(ics02_msg) => match ics02_msg {
-                ClientMsg::CreateClient(msg) => self.create_client(msg),
-                ClientMsg::UpdateClient(msg) => self.update_client(msg),
-                ClientMsg::Misbehaviour(_msg) => todo!(),
-                ClientMsg::UpgradeClient(msg) => self.upgrade_client(msg),
+        match &ibc_msg {
+            IbcMessage::Ics26(envelope) => match envelope {
+                Ics26Envelope::Ics2Msg(ics02_msg) => match ics02_msg {
+                    ClientMsg::CreateClient(msg) => self.create_client(msg),
+                    ClientMsg::UpdateClient(msg) => self.update_client(msg),
+                    ClientMsg::Misbehaviour(_msg) => todo!(),
+                    ClientMsg::UpgradeClient(msg) => self.upgrade_client(msg),
+                },
+                Ics26Envelope::Ics3Msg(ics03_msg) => match ics03_msg {
+                    ConnectionMsg::ConnectionOpenInit(msg) => {
+                        self.init_connection(msg)
+                    }
+                    ConnectionMsg::ConnectionOpenTry(msg) => {
+                        self.try_connection(msg)
+                    }
+                    ConnectionMsg::ConnectionOpenAck(msg) => {
+                        self.ack_connection(msg)
+                    }
+                    ConnectionMsg::ConnectionOpenConfirm(msg) => {
+                        self.confirm_connection(msg)
+                    }
+                },
+                Ics26Envelope::Ics4ChannelMsg(ics04_msg) => match ics04_msg {
+                    ChannelMsg::ChannelOpenInit(msg) => self.init_channel(msg),
+                    ChannelMsg::ChannelOpenTry(msg) => self.try_channel(msg),
+                    ChannelMsg::ChannelOpenAck(msg) => self.ack_channel(msg),
+                    ChannelMsg::ChannelOpenConfirm(msg) => {
+                        self.confirm_channel(msg)
+                    }
+                    ChannelMsg::ChannelCloseInit(msg) => {
+                        self.close_init_channel(msg)
+                    }
+                    ChannelMsg::ChannelCloseConfirm(msg) => {
+                        self.close_confirm_channel(msg)
+                    }
+                },
+                Ics26Envelope::Ics4PacketMsg(ics04_msg) => match ics04_msg {
+                    PacketMsg::AckPacket(msg) => self.acknowledge_packet(msg),
+                    PacketMsg::RecvPacket(msg) => self.receive_packet(msg),
+                    PacketMsg::TimeoutPacket(msg) => self.timeout_packet(msg),
+                    PacketMsg::TimeoutOnClosePacket(msg) => {
+                        self.timeout_on_close_packet(msg)
+                    }
+                },
             },
-            Ics26Envelope::Ics3Msg(ics03_msg) => match ics03_msg {
-                ConnectionMsg::ConnectionOpenInit(msg) => {
-                    self.init_connection(msg)
-                }
-                ConnectionMsg::ConnectionOpenTry(msg) => {
-                    self.try_connection(msg)
-                }
-                ConnectionMsg::ConnectionOpenAck(msg) => {
-                    self.ack_connection(msg)
-                }
-                ConnectionMsg::ConnectionOpenConfirm(msg) => {
-                    self.confirm_connection(msg)
-                }
-            },
-            Ics26Envelope::Ics4ChannelMsg(ics04_msg) => match ics04_msg {
-                ChannelMsg::ChannelOpenInit(msg) => self.init_channel(msg),
-                ChannelMsg::ChannelOpenTry(msg) => self.try_channel(msg),
-                ChannelMsg::ChannelOpenAck(msg) => self.ack_channel(msg),
-                ChannelMsg::ChannelOpenConfirm(msg) => {
-                    self.confirm_channel(msg)
-                }
-                ChannelMsg::ChannelCloseInit(msg) => {
-                    self.close_init_channel(msg)
-                }
-                ChannelMsg::ChannelCloseConfirm(msg) => {
-                    self.close_confirm_channel(msg)
-                }
-            },
-            Ics26Envelope::Ics4PacketMsg(ics04_msg) => match ics04_msg {
-                PacketMsg::AckPacket(msg) => self.acknowledge_packet(msg),
-                PacketMsg::RecvPacket(msg) => self.receive_packet(msg),
-                PacketMsg::ToPacket(msg) => self.timeout_packet(msg),
-                PacketMsg::ToClosePacket(msg) => {
-                    self.timeout_on_close_packet(msg)
-                }
-            },
-            Ics26Envelope::Ics20Msg(msg) => self.send_token(msg),
+            IbcMessage::Ics20(msg) => self.send_token(msg),
         }
     }
 
     /// Create a new client
     fn create_client(
         &mut self,
-        msg: &MsgCreateAnyClient,
+        msg: &MsgCreateClient,
     ) -> std::result::Result<(), Self::Error> {
         let counter_key = storage::client_counter_key();
         let counter = self.get_and_inc_counter(&counter_key)?;
-        let client_type = msg.client_state.client_type();
-        let client_id = client_id(client_type, counter)?;
+        let client_state = decode_client_state(msg.client_state.clone())?;
+        let client_type = client_state.client_type();
+        let client_id = client_id(client_type.clone(), counter)?;
         // client type
         let client_type_key = storage::client_type_key(&client_id);
         self.write_ibc_data(&client_type_key, client_type.as_str().as_bytes())?;
@@ -245,26 +261,20 @@ pub trait IbcActions {
         let client_state_key = storage::client_state_key(&client_id);
         self.write_ibc_data(
             &client_state_key,
-            msg.client_state
-                .encode_vec()
-                .expect("encoding shouldn't fail"),
+            &msg.client_state.encode_to_vec(),
         )?;
         // consensus state
-        let height = msg.client_state.latest_height();
+        let height = client_state.latest_height();
         let consensus_state_key =
             storage::consensus_state_key(&client_id, height);
         self.write_ibc_data(
             &consensus_state_key,
-            msg.consensus_state
-                .encode_vec()
-                .expect("encoding shouldn't fail"),
+            &msg.consensus_state.encode_to_vec(),
         )?;
-
+        // the creation time and height
         self.set_client_update_time(&client_id)?;
 
-        let event = make_create_client_event(&client_id, msg)
-            .try_into()
-            .unwrap();
+        let event = make_create_client_event(&client_id, msg)?;
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -273,7 +283,7 @@ pub trait IbcActions {
     /// Update a client
     fn update_client(
         &mut self,
-        msg: &MsgUpdateAnyClient,
+        msg: &MsgUpdateClient,
     ) -> std::result::Result<(), Self::Error> {
         // get and update the client
         let client_id = msg.client_id.clone();
@@ -285,25 +295,22 @@ pub trait IbcActions {
                     client_id
                 ))
             })?;
-        let client_state =
-            AnyClientState::decode_vec(&value).map_err(Error::Decoding)?;
+        let any_client_state =
+            Any::decode(&value[..]).map_err(Error::Decoding)?;
         let (new_client_state, new_consensus_state) =
-            update_client(client_state, msg.header.clone())?;
+            update_client(any_client_state, msg.header.clone())?;
 
-        let height = new_client_state.latest_height();
+        let client_state = decode_client_state(new_client_state.clone())?;
+        let height = client_state.latest_height();
         self.write_ibc_data(
             &client_state_key,
-            new_client_state
-                .encode_vec()
-                .expect("encoding shouldn't fail"),
+            new_client_state.encode_to_vec(),
         )?;
         let consensus_state_key =
             storage::consensus_state_key(&client_id, height);
         self.write_ibc_data(
             &consensus_state_key,
-            new_consensus_state
-                .encode_vec()
-                .expect("encoding shouldn't fail"),
+            new_consensus_state.encode_to_vec(),
         )?;
 
         self.set_client_update_time(&client_id)?;
@@ -319,23 +326,20 @@ pub trait IbcActions {
     /// Upgrade a client
     fn upgrade_client(
         &mut self,
-        msg: &MsgUpgradeAnyClient,
+        msg: &MsgUpgradeClient,
     ) -> std::result::Result<(), Self::Error> {
         let client_state_key = storage::client_state_key(&msg.client_id);
-        let height = msg.client_state.latest_height();
+        let client_state = decode_client_state(msg.client_state.clone())?;
+        let height = client_state.latest_height();
         let consensus_state_key =
             storage::consensus_state_key(&msg.client_id, height);
         self.write_ibc_data(
             &client_state_key,
-            msg.client_state
-                .encode_vec()
-                .expect("encoding shouldn't fail"),
+            msg.client_state.encode_to_vec(),
         )?;
         self.write_ibc_data(
             &consensus_state_key,
-            msg.consensus_state
-                .encode_vec()
-                .expect("encoding shouldn't fail"),
+            msg.consensus_state.encode_to_vec(),
         )?;
 
         self.set_client_update_time(&msg.client_id)?;
@@ -364,9 +368,7 @@ pub trait IbcActions {
             connection.encode_vec().expect("encoding shouldn't fail"),
         )?;
 
-        let event = make_open_init_connection_event(&conn_id, msg)
-            .try_into()
-            .unwrap();
+        let event = make_open_init_connection_event(&conn_id, msg);
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -388,9 +390,7 @@ pub trait IbcActions {
             connection.encode_vec().expect("encoding shouldn't fail"),
         )?;
 
-        let event = make_open_try_connection_event(&conn_id, msg)
-            .try_into()
-            .unwrap();
+        let event = make_open_try_connection_event(&conn_id, msg)?;
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -401,26 +401,29 @@ pub trait IbcActions {
         &mut self,
         msg: &MsgConnectionOpenAck,
     ) -> std::result::Result<(), Self::Error> {
-        let conn_key = storage::connection_key(&msg.connection_id);
+        let conn_key = storage::connection_key(&msg.conn_id_on_a);
         let value = self.read_ibc_data(&conn_key)?.ok_or_else(|| {
             Error::Connection(format!(
                 "The connection to be opened doesn't exist: ID {}",
-                msg.connection_id
+                msg.conn_id_on_a
             ))
         })?;
         let mut connection =
-            ConnectionEnd::decode_vec(&value).map_err(Error::Decoding)?;
+            ConnectionEnd::decode_vec(&value).map_err(Error::IbcDecoding)?;
         open_connection(&mut connection);
         let mut counterparty = connection.counterparty().clone();
-        counterparty.connection_id =
-            Some(msg.counterparty_connection_id.clone());
-        connection.set_counterparty(counterparty);
+        counterparty.connection_id = Some(msg.conn_id_on_b.clone());
+        connection.set_counterparty(counterparty.clone());
         self.write_ibc_data(
             &conn_key,
             connection.encode_vec().expect("encoding shouldn't fail"),
         )?;
 
-        let event = make_open_ack_connection_event(msg).try_into().unwrap();
+        let event = make_open_ack_connection_event(
+            connection.client_id(),
+            counterparty.client_id(),
+            msg,
+        );
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -431,22 +434,26 @@ pub trait IbcActions {
         &mut self,
         msg: &MsgConnectionOpenConfirm,
     ) -> std::result::Result<(), Self::Error> {
-        let conn_key = storage::connection_key(&msg.connection_id);
+        let conn_key = storage::connection_key(&msg.conn_id_on_b);
         let value = self.read_ibc_data(&conn_key)?.ok_or_else(|| {
             Error::Connection(format!(
                 "The connection to be opend doesn't exist: ID {}",
-                msg.connection_id
+                msg.conn_id_on_b
             ))
         })?;
         let mut connection =
-            ConnectionEnd::decode_vec(&value).map_err(Error::Decoding)?;
+            ConnectionEnd::decode_vec(&value).map_err(Error::IbcDecoding)?;
         open_connection(&mut connection);
         self.write_ibc_data(
             &conn_key,
             connection.encode_vec().expect("encoding shouldn't fail"),
         )?;
 
-        let event = make_open_confirm_connection_event(msg).try_into().unwrap();
+        let event = make_open_confirm_connection_event(
+            connection.client_id(),
+            &connection.counterparty(),
+            msg,
+        )?;
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -457,20 +464,21 @@ pub trait IbcActions {
         &mut self,
         msg: &MsgChannelOpenInit,
     ) -> std::result::Result<(), Self::Error> {
-        self.bind_port(&msg.port_id)?;
+        self.bind_port(&msg.port_id_on_a)?;
         let counter_key = storage::channel_counter_key();
         let counter = self.get_and_inc_counter(&counter_key)?;
         let channel_id = channel_id(counter);
-        let port_channel_id = port_channel_id(msg.port_id.clone(), channel_id);
+        let port_channel_id =
+            port_channel_id(msg.port_id_on_a.clone(), channel_id.clone());
         let channel_key = storage::channel_key(&port_channel_id);
         self.write_ibc_data(
             &channel_key,
-            msg.channel.encode_vec().expect("encoding shouldn't fail"),
+            msg.chan_end_on_a
+                .encode_vec()
+                .expect("encoding shouldn't fail"),
         )?;
 
-        let event = make_open_init_channel_event(&channel_id, msg)
-            .try_into()
-            .unwrap();
+        let event = make_open_init_channel_event(&channel_id, msg);
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -481,20 +489,21 @@ pub trait IbcActions {
         &mut self,
         msg: &MsgChannelOpenTry,
     ) -> std::result::Result<(), Self::Error> {
-        self.bind_port(&msg.port_id)?;
+        self.bind_port(&msg.port_id_on_b)?;
         let counter_key = storage::channel_counter_key();
         let counter = self.get_and_inc_counter(&counter_key)?;
         let channel_id = channel_id(counter);
-        let port_channel_id = port_channel_id(msg.port_id.clone(), channel_id);
+        let port_channel_id =
+            port_channel_id(msg.port_id_on_b.clone(), channel_id.clone());
         let channel_key = storage::channel_key(&port_channel_id);
         self.write_ibc_data(
             &channel_key,
-            msg.channel.encode_vec().expect("encoding shouldn't fail"),
+            msg.chan_end_on_b
+                .encode_vec()
+                .expect("encoding shouldn't fail"),
         )?;
 
-        let event = make_open_try_channel_event(&channel_id, msg)
-            .try_into()
-            .unwrap();
+        let event = make_open_try_channel_event(&channel_id, msg)?;
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -506,7 +515,7 @@ pub trait IbcActions {
         msg: &MsgChannelOpenAck,
     ) -> std::result::Result<(), Self::Error> {
         let port_channel_id =
-            port_channel_id(msg.port_id.clone(), msg.channel_id);
+            port_channel_id(msg.port_id_on_a.clone(), msg.chan_id_on_a.clone());
         let channel_key = storage::channel_key(&port_channel_id);
         let value = self.read_ibc_data(&channel_key)?.ok_or_else(|| {
             Error::Channel(format!(
@@ -515,17 +524,15 @@ pub trait IbcActions {
             ))
         })?;
         let mut channel =
-            ChannelEnd::decode_vec(&value).map_err(Error::Decoding)?;
-        channel.set_counterparty_channel_id(msg.counterparty_channel_id);
+            ChannelEnd::decode_vec(&value).map_err(Error::IbcDecoding)?;
+        channel.set_counterparty_channel_id(msg.chan_id_on_b.clone());
         open_channel(&mut channel);
         self.write_ibc_data(
             &channel_key,
             channel.encode_vec().expect("encoding shouldn't fail"),
         )?;
 
-        let event = make_open_ack_channel_event(msg, &channel)?
-            .try_into()
-            .unwrap();
+        let event = make_open_ack_channel_event(msg, &channel)?;
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -537,7 +544,7 @@ pub trait IbcActions {
         msg: &MsgChannelOpenConfirm,
     ) -> std::result::Result<(), Self::Error> {
         let port_channel_id =
-            port_channel_id(msg.port_id.clone(), msg.channel_id);
+            port_channel_id(msg.port_id_on_b.clone(), msg.chan_id_on_b.clone());
         let channel_key = storage::channel_key(&port_channel_id);
         let value = self.read_ibc_data(&channel_key)?.ok_or_else(|| {
             Error::Channel(format!(
@@ -546,16 +553,14 @@ pub trait IbcActions {
             ))
         })?;
         let mut channel =
-            ChannelEnd::decode_vec(&value).map_err(Error::Decoding)?;
+            ChannelEnd::decode_vec(&value).map_err(Error::IbcDecoding)?;
         open_channel(&mut channel);
         self.write_ibc_data(
             &channel_key,
             channel.encode_vec().expect("encoding shouldn't fail"),
         )?;
 
-        let event = make_open_confirm_channel_event(msg, &channel)?
-            .try_into()
-            .unwrap();
+        let event = make_open_confirm_channel_event(msg, &channel)?;
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -567,7 +572,7 @@ pub trait IbcActions {
         msg: &MsgChannelCloseInit,
     ) -> std::result::Result<(), Self::Error> {
         let port_channel_id =
-            port_channel_id(msg.port_id.clone(), msg.channel_id);
+            port_channel_id(msg.port_id_on_a.clone(), msg.chan_id_on_a.clone());
         let channel_key = storage::channel_key(&port_channel_id);
         let value = self.read_ibc_data(&channel_key)?.ok_or_else(|| {
             Error::Channel(format!(
@@ -576,16 +581,14 @@ pub trait IbcActions {
             ))
         })?;
         let mut channel =
-            ChannelEnd::decode_vec(&value).map_err(Error::Decoding)?;
+            ChannelEnd::decode_vec(&value).map_err(Error::IbcDecoding)?;
         close_channel(&mut channel);
         self.write_ibc_data(
             &channel_key,
             channel.encode_vec().expect("encoding shouldn't fail"),
         )?;
 
-        let event = make_close_init_channel_event(msg, &channel)?
-            .try_into()
-            .unwrap();
+        let event = make_close_init_channel_event(msg, &channel)?;
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -597,7 +600,7 @@ pub trait IbcActions {
         msg: &MsgChannelCloseConfirm,
     ) -> std::result::Result<(), Self::Error> {
         let port_channel_id =
-            port_channel_id(msg.port_id.clone(), msg.channel_id);
+            port_channel_id(msg.port_id_on_b.clone(), msg.chan_id_on_b.clone());
         let channel_key = storage::channel_key(&port_channel_id);
         let value = self.read_ibc_data(&channel_key)?.ok_or_else(|| {
             Error::Channel(format!(
@@ -606,16 +609,14 @@ pub trait IbcActions {
             ))
         })?;
         let mut channel =
-            ChannelEnd::decode_vec(&value).map_err(Error::Decoding)?;
+            ChannelEnd::decode_vec(&value).map_err(Error::IbcDecoding)?;
         close_channel(&mut channel);
         self.write_ibc_data(
             &channel_key,
             channel.encode_vec().expect("encoding shouldn't fail"),
         )?;
 
-        let event = make_close_confirm_channel_event(msg, &channel)?
-            .try_into()
-            .unwrap();
+        let event = make_close_confirm_channel_event(msg, &channel)?;
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -626,7 +627,7 @@ pub trait IbcActions {
         &mut self,
         port_channel_id: PortChannelId,
         data: Vec<u8>,
-        timeout_height: Height,
+        timeout_height: TimeoutHeight,
         timeout_timestamp: Timestamp,
     ) -> std::result::Result<(), Self::Error> {
         // get and increment the next sequence send
@@ -646,11 +647,12 @@ pub trait IbcActions {
         let packet = Packet {
             sequence,
             source_port: port_channel_id.port_id.clone(),
-            source_channel: port_channel_id.channel_id,
+            source_channel: port_channel_id.channel_id.clone(),
             destination_port: counterparty.port_id.clone(),
-            destination_channel: *counterparty
+            destination_channel: counterparty
                 .channel_id()
-                .expect("the counterparty channel should exist"),
+                .expect("the counterparty channel should exist")
+                .clone(),
             data,
             timeout_height,
             timeout_timestamp,
@@ -664,7 +666,16 @@ pub trait IbcActions {
         let commitment = commitment(&packet);
         self.write_ibc_data(&commitment_key, commitment.into_vec())?;
 
-        let event = make_send_packet_event(packet).try_into().unwrap();
+        let connection_id =
+            channel.connection_hops().first().ok_or_else(|| {
+                Error::Channel(format!(
+                    "No connection ID for the channel exists: port {}, \
+                     channel {}",
+                    port_channel_id.port_id, port_channel_id.channel_id
+                ))
+            })?;
+        let event =
+            make_send_packet_event(packet, channel.ordering(), connection_id)?;
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -679,13 +690,19 @@ pub trait IbcActions {
         let packet_ack =
             if let Ok(data) = serde_json::from_slice(&msg.packet.data) {
                 match self.receive_token(&msg.packet, &data) {
-                    Ok(_) => PacketAck::result_success(),
-                    Err(_) => PacketAck::result_error(
+                    Ok(_) => Acknowledgement::success(),
+                    Err(_) => Acknowledgement::Error(format!(
+                        "{}: {}",
+                        ACK_ERR_STR,
                         "receiving a token failed".to_string(),
-                    ),
+                    )),
                 }
             } else {
-                PacketAck::result_error("unknown packet data".to_string())
+                Acknowledgement::Error(format!(
+                    "{}: {}",
+                    ACK_ERR_STR,
+                    "unknown packet data".to_string()
+                ))
             };
 
         // store the receipt
@@ -702,21 +719,41 @@ pub trait IbcActions {
             &msg.packet.destination_channel,
             msg.packet.sequence,
         );
-        let ack = packet_ack.encode_to_vec();
+        let ack = serde_json::to_vec(&packet_ack)
+            .expect("Encoding acknowledgement shouldn't fail");
         let ack_commitment = sha2::Sha256::digest(&ack).to_vec();
         self.write_ibc_data(&ack_key, ack_commitment)?;
 
         // increment the next sequence receive
         let port_channel_id = port_channel_id(
             msg.packet.destination_port.clone(),
-            msg.packet.destination_channel,
+            msg.packet.destination_channel.clone(),
         );
         let seq_key = storage::next_sequence_recv_key(&port_channel_id);
         self.get_and_inc_sequence(&seq_key)?;
 
-        let event = make_write_ack_event(msg.packet.clone(), ack)
-            .try_into()
-            .unwrap();
+        let channel_key = storage::channel_key(&port_channel_id);
+        let value = self.read_ibc_data(&channel_key)?.ok_or_else(|| {
+            Error::Channel(format!(
+                "The channel to be closed doesn't exist: Port/Channel {}",
+                port_channel_id
+            ))
+        })?;
+        let channel =
+            ChannelEnd::decode_vec(&value).map_err(Error::IbcDecoding)?;
+        let connection_id =
+            channel.connection_hops().first().ok_or_else(|| {
+                Error::Channel(format!(
+                    "No connection ID for the channel exists: port {}, \
+                     channel {}",
+                    port_channel_id.port_id, port_channel_id.channel_id
+                ))
+            })?;
+        let event = make_write_ack_event(
+            msg.packet.clone(),
+            &packet_ack,
+            connection_id,
+        )?;
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -727,11 +764,19 @@ pub trait IbcActions {
         &mut self,
         msg: &MsgAcknowledgement,
     ) -> std::result::Result<(), Self::Error> {
-        let ack = PacketAck::try_from(msg.acknowledgement.clone())
-            .map_err(Error::IbcData)?;
-        if !ack.is_success() {
-            if let Ok(data) = serde_json::from_slice(&msg.packet.data) {
-                self.refund_token(&msg.packet, &data)?;
+        if msg.acknowledgement().as_bytes()
+            != Acknowledgement::success().as_ref()
+        {
+            match serde_json::from_slice::<PacketData>(&msg.packet.data) {
+                Ok(data) => self.refund_token(&msg.packet, &data)?,
+                Err(e) => {
+                    return Err(Error::Channel(format!(
+                        "Packet of MsgAcknowledgement has unknown data : \
+                         error {}",
+                        e
+                    ))
+                    .into());
+                }
             }
         }
 
@@ -745,12 +790,33 @@ pub trait IbcActions {
         // get and increment the next sequence ack
         let port_channel_id = port_channel_id(
             msg.packet.source_port.clone(),
-            msg.packet.source_channel,
+            msg.packet.source_channel.clone(),
         );
         let seq_key = storage::next_sequence_ack_key(&port_channel_id);
         self.get_and_inc_sequence(&seq_key)?;
 
-        let event = make_ack_event(msg.packet.clone()).try_into().unwrap();
+        let channel_key = storage::channel_key(&port_channel_id);
+        let value = self.read_ibc_data(&channel_key)?.ok_or_else(|| {
+            Error::Channel(format!(
+                "The channel to be closed doesn't exist: Port/Channel {}",
+                port_channel_id
+            ))
+        })?;
+        let channel =
+            ChannelEnd::decode_vec(&value).map_err(Error::IbcDecoding)?;
+        let connection_id =
+            channel.connection_hops().first().ok_or_else(|| {
+                Error::Channel(format!(
+                    "No connection ID for the channel exists: port {}, \
+                     channel {}",
+                    port_channel_id.port_id, port_channel_id.channel_id
+                ))
+            })?;
+        let event = make_ack_event(
+            msg.packet.clone(),
+            channel.ordering(),
+            &connection_id,
+        );
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -777,7 +843,7 @@ pub trait IbcActions {
         // close the channel
         let port_channel_id = port_channel_id(
             msg.packet.source_port.clone(),
-            msg.packet.source_channel,
+            msg.packet.source_channel.clone(),
         );
         let channel_key = storage::channel_key(&port_channel_id);
         let value = self.read_ibc_data(&channel_key)?.ok_or_else(|| {
@@ -787,7 +853,7 @@ pub trait IbcActions {
             ))
         })?;
         let mut channel =
-            ChannelEnd::decode_vec(&value).map_err(Error::Decoding)?;
+            ChannelEnd::decode_vec(&value).map_err(Error::IbcDecoding)?;
         if channel.order_matches(&Order::Ordered) {
             close_channel(&mut channel);
             self.write_ibc_data(
@@ -796,7 +862,9 @@ pub trait IbcActions {
             )?;
         }
 
-        let event = make_timeout_event(msg.packet.clone()).try_into().unwrap();
+        let event = make_timeout_event(msg.packet.clone(), channel.ordering())
+            .try_into()
+            .unwrap();
         self.emit_ibc_event(event)?;
 
         Ok(())
@@ -823,7 +891,7 @@ pub trait IbcActions {
         // close the channel
         let port_channel_id = port_channel_id(
             msg.packet.source_port.clone(),
-            msg.packet.source_channel,
+            msg.packet.source_channel.clone(),
         );
         let channel_key = storage::channel_key(&port_channel_id);
         let value = self.read_ibc_data(&channel_key)?.ok_or_else(|| {
@@ -833,7 +901,7 @@ pub trait IbcActions {
             ))
         })?;
         let mut channel =
-            ChannelEnd::decode_vec(&value).map_err(Error::Decoding)?;
+            ChannelEnd::decode_vec(&value).map_err(Error::IbcDecoding)?;
         if channel.order_matches(&Order::Ordered) {
             close_channel(&mut channel);
             self.write_ibc_data(
@@ -861,7 +929,8 @@ pub trait IbcActions {
         )?;
 
         // the revision number is always 0
-        let height = Height::new(0, self.get_height()?.0);
+        let height = Height::new(0, self.get_height()?.0)
+            .expect("The conversion shouldn't fail");
         let height_key = storage::client_update_height_key(client_id);
         // write the current height as u64
         self.write_ibc_data(
@@ -935,9 +1004,10 @@ pub trait IbcActions {
         &mut self,
         msg: &MsgTransfer,
     ) -> std::result::Result<(), Self::Error> {
-        let mut data = FungibleTokenPacketData::from(msg.clone());
-        if let Some(hash) = storage::token_hash_from_denom(&data.denom)
-            .map_err(Error::IbcStorage)?
+        // update the deom if it has IbcToken
+        let denom = if let Some(hash) =
+            storage::token_hash_from_denom(&msg.token.denom)
+                .map_err(Error::IbcStorage)?
         {
             let denom_key = storage::ibc_denom_key(hash);
             let denom_bytes =
@@ -953,53 +1023,48 @@ pub trait IbcActions {
                     denom_key, e
                 ))
             })?;
-            data.denom = denom.to_string();
-        }
-        let token = storage::token(&data.denom).map_err(Error::IbcStorage)?;
-        let amount = Amount::from_str(&data.amount).map_err(|e| {
-            Error::SendingToken(format!(
-                "Invalid amount: amount {}, error {}",
-                data.amount, e
-            ))
-        })?;
+            denom.to_string()
+        } else {
+            msg.token.denom.clone()
+        };
+        let coin = PrefixedCoin {
+            denom: PrefixedDenom::from_str(&denom).map_err(|e| {
+                Error::SendingToken(format!(
+                    "Decoding the denom failed: denom {}, error {}",
+                    denom, e
+                ))
+            })?,
+            amount: TransferAmount::from_str(&msg.token.amount).map_err(
+                |e| {
+                    Error::SendingToken(format!(
+                        "Decoding the amount failed: amount {}, error {}",
+                        msg.token.amount, e
+                    ))
+                },
+            )?,
+        };
+        let token = storage::token(&coin).map_err(Error::IbcStorage)?;
 
-        let source_addr = Address::decode(&data.sender).map_err(|e| {
+        let source_addr = Address::decode(&msg.sender).map_err(|e| {
             Error::SendingToken(format!(
                 "Invalid sender address: sender {}, error {}",
-                data.sender, e
+                msg.sender, e
             ))
         })?;
 
-        // check the denomination field
-        let prefix = format!(
-            "{}/{}/",
-            msg.source_port.clone(),
-            msg.source_channel.clone()
-        );
-        let (source, target) = if data.denom.starts_with(&prefix) {
-            // the receiver's chain was the source
-            // transfer from the origin-specific account of the token
-            let key_prefix = storage::ibc_token_prefix(&data.denom)
-                .map_err(Error::IbcStorage)?;
-            let src = token::multitoken_balance_key(&key_prefix, &source_addr);
+        let amount = storage::amount(&coin).map_err(Error::IbcStorage)?;
 
-            let key_prefix = storage::ibc_account_prefix(
-                &msg.source_port,
-                &msg.source_channel,
-                &token,
-            );
-            let burn = token::multitoken_balance_key(
-                &key_prefix,
-                &Address::Internal(InternalAddress::IbcBurn),
-            );
-            (src, burn)
-        } else {
+        let (source, target) = if is_sender_chain_source(
+            msg.source_port.clone(),
+            msg.source_channel.clone(),
+            &coin.denom,
+        ) {
             // this chain is the source
             // escrow the amount of the token
-            let src = if data.denom == token.to_string() {
+            let src = if coin.denom.trace_path.is_empty() {
                 token::balance_key(&token, &source_addr)
             } else {
-                let key_prefix = storage::ibc_token_prefix(&data.denom)
+                let key_prefix = storage::ibc_token_prefix(&coin)
                     .map_err(Error::IbcStorage)?;
                 token::multitoken_balance_key(&key_prefix, &source_addr)
             };
@@ -1014,14 +1079,39 @@ pub trait IbcActions {
                 &Address::Internal(InternalAddress::IbcEscrow),
             );
             (src, escrow)
+        } else {
+            // the receiver's chain was the source
+            // transfer from the origin-specific account of the token
+            let key_prefix =
+                storage::ibc_token_prefix(&coin).map_err(Error::IbcStorage)?;
+            let src = token::multitoken_balance_key(&key_prefix, &source_addr);
+
+            let key_prefix = storage::ibc_account_prefix(
+                &msg.source_port,
+                &msg.source_channel,
+                &token,
+            );
+            let burn = token::multitoken_balance_key(
+                &key_prefix,
+                &Address::Internal(InternalAddress::IbcBurn),
+            );
+            (src, burn)
         };
         self.transfer_token(&source, &target, amount)?;
 
+        let data = PacketData {
+            token: coin,
+            sender: msg.sender.clone(),
+            receiver: msg.receiver.clone(),
+        };
+        let packet_data =
+            serde_json::to_vec(&data).expect("Encoding PacketData failed");
+
         // send a packet
-        let port_channel_id =
-            port_channel_id(msg.source_port.clone(), msg.source_channel);
-        let packet_data = serde_json::to_vec(&data)
-            .expect("encoding the packet data shouldn't fail");
+        let port_channel_id = port_channel_id(
+            msg.source_port.clone(),
+            msg.source_channel.clone(),
+        );
         self.send_packet(
             port_channel_id,
             packet_data,
@@ -1034,15 +1124,11 @@ pub trait IbcActions {
     fn receive_token(
         &mut self,
         packet: &Packet,
-        data: &FungibleTokenPacketData,
+        data: &PacketData,
     ) -> std::result::Result<(), Self::Error> {
-        let token = storage::token(&data.denom).map_err(Error::IbcStorage)?;
-        let amount = Amount::from_str(&data.amount).map_err(|e| {
-            Error::ReceivingToken(format!(
-                "Invalid amount: amount {}, error {}",
-                data.amount, e
-            ))
-        })?;
+        let token = storage::token(&data.token).map_err(Error::IbcStorage)?;
+        let amount = storage::amount(&data.token).map_err(Error::IbcStorage)?;
+
         // The receiver should be an address because the origin-specific account
         // key should be assigned internally
         let dest_addr = Address::decode(&data.receiver).map_err(|e| {
@@ -1052,63 +1138,58 @@ pub trait IbcActions {
             ))
         })?;
 
-        let prefix = format!(
-            "{}/{}/",
+        let mut coin = data.token.clone();
+        let (source, target) = if is_receiver_chain_source(
             packet.source_port.clone(),
-            packet.source_channel.clone()
-        );
-        let (source, target) = match data.denom.strip_prefix(&prefix) {
-            Some(denom) => {
-                // unescrow the token because this chain was the source
-                let escrow_prefix = storage::ibc_account_prefix(
-                    &packet.destination_port,
-                    &packet.destination_channel,
-                    &token,
-                );
-                let escrow = token::multitoken_balance_key(
-                    &escrow_prefix,
-                    &Address::Internal(InternalAddress::IbcEscrow),
-                );
-                let dest = if denom == token.to_string() {
-                    token::balance_key(&token, &dest_addr)
-                } else {
-                    let key_prefix = storage::ibc_token_prefix(denom)
-                        .map_err(Error::IbcStorage)?;
-                    token::multitoken_balance_key(&key_prefix, &dest_addr)
-                };
-                (escrow, dest)
-            }
-            None => {
-                // mint the token because the sender chain is the source
-                let key_prefix = storage::ibc_account_prefix(
-                    &packet.destination_port,
-                    &packet.destination_channel,
-                    &token,
-                );
-                let mint = token::multitoken_balance_key(
-                    &key_prefix,
-                    &Address::Internal(InternalAddress::IbcMint),
-                );
-
-                // prefix the denom with the this chain port and channel
-                let denom = format!(
-                    "{}/{}/{}",
-                    &packet.destination_port,
-                    &packet.destination_channel,
-                    &data.denom
-                );
-                let key_prefix = storage::ibc_token_prefix(&denom)
+            packet.source_channel.clone(),
+            &coin.denom,
+        ) {
+            // unescrow the token because this chain was the source
+            let escrow_prefix = storage::ibc_account_prefix(
+                &packet.destination_port,
+                &packet.destination_channel,
+                &token,
+            );
+            let escrow = token::multitoken_balance_key(
+                &escrow_prefix,
+                &Address::Internal(InternalAddress::IbcEscrow),
+            );
+            let dest = if coin.denom.trace_path.is_empty() {
+                token::balance_key(&token, &dest_addr)
+            } else {
+                let key_prefix = storage::ibc_token_prefix(&coin)
                     .map_err(Error::IbcStorage)?;
-                let dest =
-                    token::multitoken_balance_key(&key_prefix, &dest_addr);
+                token::multitoken_balance_key(&key_prefix, &dest_addr)
+            };
+            (escrow, dest)
+        } else {
+            // mint the token because the sender chain is the source
+            let key_prefix = storage::ibc_account_prefix(
+                &packet.destination_port,
+                &packet.destination_channel,
+                &token,
+            );
+            let mint = token::multitoken_balance_key(
+                &key_prefix,
+                &Address::Internal(InternalAddress::IbcMint),
+            );
 
-                // store the prefixed denom
-                let token_hash = storage::calc_hash(&denom);
-                let denom_key = storage::ibc_denom_key(token_hash);
-                self.write_ibc_data(&denom_key, denom.as_bytes())?;
+            // prefix the denom with the this chain port and channel
+            let prefix = TracePrefix::new(
+                packet.destination_port.clone(),
+                packet.destination_channel.clone(),
+            );
+            coin.denom.add_trace_prefix(prefix);
+            let key_prefix =
+                storage::ibc_token_prefix(&coin).map_err(Error::IbcStorage)?;
+            let dest = token::multitoken_balance_key(&key_prefix, &dest_addr);
 
-                (mint, dest)
-            }
+            // store the prefixed denom as String
+            let token_hash = storage::calc_hash(&coin.denom.to_string());
+            let denom_key = storage::ibc_denom_key(token_hash);
+            self.write_ibc_data(&denom_key, coin.denom.to_string().as_bytes())?;
+
+            (mint, dest)
         };
         self.transfer_token(&source, &target, amount)?;
 
@@ -1119,15 +1200,10 @@ pub trait IbcActions {
     fn refund_token(
         &mut self,
         packet: &Packet,
-        data: &FungibleTokenPacketData,
+        data: &PacketData,
     ) -> std::result::Result<(), Self::Error> {
-        let token = storage::token(&data.denom).map_err(Error::IbcStorage)?;
-        let amount = Amount::from_str(&data.amount).map_err(|e| {
-            Error::ReceivingToken(format!(
-                "Invalid amount: amount {}, error {}",
-                data.amount, e
-            ))
-        })?;
+        let token = storage::token(&data.token).map_err(Error::IbcStorage)?;
+        let amount = storage::amount(&data.token).map_err(Error::IbcStorage)?;
 
         let dest_addr = Address::decode(&data.sender).map_err(|e| {
             Error::SendingToken(format!(
@@ -1136,32 +1212,17 @@ pub trait IbcActions {
             ))
         })?;
 
-        let prefix = format!(
-            "{}/{}/",
+        let coin = &data.token;
+        let (source, target) = if is_sender_chain_source(
             packet.source_port.clone(),
-            packet.source_channel.clone()
-        );
-        let (source, target) = if data.denom.starts_with(&prefix) {
-            // mint the token because the amount was burned
-            let key_prefix = storage::ibc_account_prefix(
-                &packet.source_port,
-                &packet.source_channel,
-                &token,
-            );
-            let mint = token::multitoken_balance_key(
-                &key_prefix,
-                &Address::Internal(InternalAddress::IbcMint),
-            );
-            let key_prefix = storage::ibc_token_prefix(&data.denom)
-                .map_err(Error::IbcStorage)?;
-            let dest = token::multitoken_balance_key(&key_prefix, &dest_addr);
-            (mint, dest)
-        } else {
+            packet.source_channel.clone(),
+            &data.token.denom,
+        ) {
             // unescrow the token because the acount was escrowed
-            let dest = if data.denom == token.to_string() {
+            let dest = if coin.denom.trace_path.is_empty() {
                 token::balance_key(&token, &dest_addr)
             } else {
-                let key_prefix = storage::ibc_token_prefix(&data.denom)
+                let key_prefix = storage::ibc_token_prefix(coin)
                     .map_err(Error::IbcStorage)?;
                 token::multitoken_balance_key(&key_prefix, &dest_addr)
             };
@@ -1176,6 +1237,21 @@ pub trait IbcActions {
                 &Address::Internal(InternalAddress::IbcEscrow),
             );
             (escrow, dest)
+        } else {
+            // mint the token because the amount was burned
+            let key_prefix = storage::ibc_account_prefix(
+                &packet.source_port,
+                &packet.source_channel,
+                &token,
+            );
+            let mint = token::multitoken_balance_key(
+                &key_prefix,
+                &Address::Internal(InternalAddress::IbcMint),
+            );
+            let key_prefix =
+                storage::ibc_token_prefix(coin).map_err(Error::IbcStorage)?;
+            let dest = token::multitoken_balance_key(&key_prefix, &dest_addr);
+            (mint, dest)
         };
         self.transfer_token(&source, &target, amount)?;
 
@@ -1184,33 +1260,29 @@ pub trait IbcActions {
 }
 
 /// Update a client with the given state and headers
-pub fn update_client(
-    client_state: AnyClientState,
-    header: AnyHeader,
-) -> Result<(AnyClientState, AnyConsensusState)> {
-    match client_state {
-        AnyClientState::Tendermint(cs) => match header {
-            AnyHeader::Tendermint(h) => {
-                let new_client_state = cs.with_header(h.clone()).wrap_any();
-                let new_consensus_state = TmConsensusState::from(h).wrap_any();
-                Ok((new_client_state, new_consensus_state))
-            }
-            #[cfg(any(feature = "ibc-mocks-abcipp", feature = "ibc-mocks"))]
-            _ => Err(Error::ClientUpdate(
-                "The header type is mismatched".to_owned(),
-            )),
-        },
-        #[cfg(any(feature = "ibc-mocks-abcipp", feature = "ibc-mocks"))]
-        AnyClientState::Mock(_) => match header {
-            AnyHeader::Mock(h) => Ok((
-                MockClientState::new(h).wrap_any(),
-                MockConsensusState::new(h).wrap_any(),
-            )),
-            _ => Err(Error::ClientUpdate(
-                "The header type is mismatched".to_owned(),
-            )),
-        },
+pub fn update_client(client_state: Any, header: Any) -> Result<(Any, Any)> {
+    if let Ok(cs) = TmClientState::try_from(client_state.clone()) {
+        if let Ok(h) = TmHeader::try_from(header.clone()) {
+            let new_client_state = cs
+                .with_header(h.clone())
+                .map_err(|e| Error::ClientUpdate(e.to_string()))?;
+            let new_consensus_state = TmConsensusState::from(h);
+            return Ok((new_client_state.into(), new_consensus_state.into()));
+        }
     }
+
+    #[cfg(any(feature = "ibc-mocks-abcipp", feature = "ibc-mocks"))]
+    if let Ok(_) = MockClientState::try_from(client_state.clone()) {
+        if let Ok(h) = MockHeader::try_from(header) {
+            let new_client_state = MockClientState::new(h);
+            let new_consensus_state = MockConsensusState::new(h);
+            return Ok((new_client_state.into(), new_consensus_state.into()));
+        }
+    }
+
+    Err(Error::ClientUpdate(
+        "The client state or header type is unknown".to_owned(),
+    ))
 }
 
 /// Returns a new client ID
@@ -1227,7 +1299,7 @@ pub fn connection_id(counter: u64) -> ConnectionId {
 pub fn init_connection(msg: &MsgConnectionOpenInit) -> ConnectionEnd {
     ConnectionEnd::new(
         ConnState::Init,
-        msg.client_id.clone(),
+        msg.client_id_on_a.clone(),
         msg.counterparty.clone(),
         vec![msg.version.clone().unwrap_or_default()],
         msg.delay_period,
@@ -1238,9 +1310,9 @@ pub fn init_connection(msg: &MsgConnectionOpenInit) -> ConnectionEnd {
 pub fn try_connection(msg: &MsgConnectionOpenTry) -> ConnectionEnd {
     ConnectionEnd::new(
         ConnState::TryOpen,
-        msg.client_id.clone(),
+        msg.client_id_on_b.clone(),
         msg.counterparty.clone(),
-        msg.counterparty_versions.clone(),
+        msg.versions_on_a.clone(),
         msg.delay_period,
     )
 }
@@ -1286,32 +1358,17 @@ pub fn sequence(index: u64) -> Sequence {
     Sequence::from(index)
 }
 
-/// Make a packet from MsgTransfer
-pub fn packet_from_message(
-    msg: &MsgTransfer,
-    sequence: Sequence,
-    counterparty: &ChanCounterparty,
-) -> Packet {
-    Packet {
-        sequence,
-        source_port: msg.source_port.clone(),
-        source_channel: msg.source_channel,
-        destination_port: counterparty.port_id.clone(),
-        destination_channel: *counterparty
-            .channel_id()
-            .expect("the counterparty channel should exist"),
-        data: serde_json::to_vec(&FungibleTokenPacketData::from(msg.clone()))
-            .expect("encoding the packet data shouldn't fail"),
-        timeout_height: msg.timeout_height,
-        timeout_timestamp: msg.timeout_timestamp,
-    }
-}
-
 /// Returns a commitment from the given packet
 pub fn commitment(packet: &Packet) -> PacketCommitment {
     let timeout = packet.timeout_timestamp.nanoseconds().to_be_bytes();
-    let revision_number = packet.timeout_height.revision_number.to_be_bytes();
-    let revision_height = packet.timeout_height.revision_height.to_be_bytes();
+    let revision_number = packet
+        .timeout_height
+        .commitment_revision_number()
+        .to_be_bytes();
+    let revision_height = packet
+        .timeout_height
+        .commitment_revision_height()
+        .to_be_bytes();
     let data = sha2::Sha256::digest(&packet.data);
     let input = [
         &timeout,
@@ -1348,216 +1405,233 @@ pub fn commitment_prefix() -> CommitmentPrefix {
 /// Makes CreateClient event
 pub fn make_create_client_event(
     client_id: &ClientId,
-    msg: &MsgCreateAnyClient,
-) -> IbcEvent {
-    let attributes = ClientAttributes {
-        client_id: client_id.clone(),
-        client_type: msg.client_state.client_type(),
-        consensus_height: msg.client_state.latest_height(),
-        ..Default::default()
-    };
-    IbcEvent::CreateClient(CreateClient::from(attributes))
+    msg: &MsgCreateClient,
+) -> Result<NamadaIbcEvent> {
+    let client_state = decode_client_state(msg.client_state.clone())?;
+    Ok(AbciEvent::from(CreateClient::new(
+        client_id.clone(),
+        client_state.client_type(),
+        client_state.latest_height(),
+    ))
+    .into())
 }
 
 /// Makes UpdateClient event
 pub fn make_update_client_event(
     client_id: &ClientId,
-    msg: &MsgUpdateAnyClient,
-) -> IbcEvent {
-    let attributes = ClientAttributes {
-        client_id: client_id.clone(),
-        client_type: msg.header.client_type(),
-        consensus_height: msg.header.height(),
-        ..Default::default()
-    };
-    IbcEvent::UpdateClient(UpdateClient::from(attributes))
+    msg: &MsgUpdateClient,
+) -> NamadaIbcEvent {
+    let header = decode_header(msg.header.clone()).unwrap();
+    AbciEvent::from(UpdateClient::new(
+        client_id.clone(),
+        header.client_type(),
+        Height::new(0, 0).unwrap(),
+        vec![header.height()],
+        msg.header.clone(),
+    ))
+    .into()
 }
 
 /// Makes UpgradeClient event
 pub fn make_upgrade_client_event(
     client_id: &ClientId,
-    msg: &MsgUpgradeAnyClient,
-) -> IbcEvent {
-    let attributes = ClientAttributes {
-        client_id: client_id.clone(),
-        client_type: msg.client_state.client_type(),
-        consensus_height: msg.client_state.latest_height(),
-        ..Default::default()
-    };
-    IbcEvent::UpgradeClient(UpgradeClient::from(attributes))
+    msg: &MsgUpgradeClient,
+) -> NamadaIbcEvent {
+    let client_state = decode_client_state(msg.client_state.clone()).unwrap();
+    AbciEvent::from(UpgradeClient::new(
+        client_id.clone(),
+        client_state.client_type(),
+        client_state.latest_height(),
+    ))
+    .into()
 }
 
 /// Makes OpenInitConnection event
 pub fn make_open_init_connection_event(
     conn_id: &ConnectionId,
     msg: &MsgConnectionOpenInit,
-) -> IbcEvent {
-    let attributes = ConnectionAttributes {
-        connection_id: Some(conn_id.clone()),
-        client_id: msg.client_id.clone(),
-        counterparty_connection_id: msg.counterparty.connection_id().cloned(),
-        counterparty_client_id: msg.counterparty.client_id().clone(),
-        ..Default::default()
-    };
-    ConnOpenInit::from(attributes).into()
+) -> NamadaIbcEvent {
+    AbciEvent::from(ConnOpenInit::new(
+        conn_id.clone(),
+        msg.client_id_on_a.clone(),
+        msg.counterparty.client_id().clone(),
+    ))
+    .into()
 }
 
 /// Makes OpenTryConnection event
 pub fn make_open_try_connection_event(
     conn_id: &ConnectionId,
     msg: &MsgConnectionOpenTry,
-) -> IbcEvent {
-    let attributes = ConnectionAttributes {
-        connection_id: Some(conn_id.clone()),
-        client_id: msg.client_id.clone(),
-        counterparty_connection_id: msg.counterparty.connection_id().cloned(),
-        counterparty_client_id: msg.counterparty.client_id().clone(),
-        ..Default::default()
-    };
-    ConnOpenTry::from(attributes).into()
+) -> Result<NamadaIbcEvent> {
+    let counterparty_conn_id =
+        msg.counterparty.connection_id().ok_or_else(|| {
+            Error::Connection("No counterparty connection".to_string())
+        })?;
+    Ok(AbciEvent::from(ConnOpenTry::new(
+        conn_id.clone(),
+        msg.client_id_on_b.clone(),
+        counterparty_conn_id.clone(),
+        msg.counterparty.client_id().clone(),
+    ))
+    .into())
 }
 
 /// Makes OpenAckConnection event
-pub fn make_open_ack_connection_event(msg: &MsgConnectionOpenAck) -> IbcEvent {
-    let attributes = ConnectionAttributes {
-        connection_id: Some(msg.connection_id.clone()),
-        counterparty_connection_id: Some(
-            msg.counterparty_connection_id.clone(),
-        ),
-        ..Default::default()
-    };
-    ConnOpenAck::from(attributes).into()
+pub fn make_open_ack_connection_event(
+    client_id: &ClientId,
+    counterparty_client_id: &ClientId,
+    msg: &MsgConnectionOpenAck,
+) -> NamadaIbcEvent {
+    AbciEvent::from(ConnOpenAck::new(
+        msg.conn_id_on_a.clone(),
+        client_id.clone(),
+        msg.conn_id_on_b.clone(),
+        counterparty_client_id.clone(),
+    ))
+    .into()
 }
 
 /// Makes OpenConfirmConnection event
 pub fn make_open_confirm_connection_event(
+    client_id: &ClientId,
+    counterparty: &ConnCounterparty,
     msg: &MsgConnectionOpenConfirm,
-) -> IbcEvent {
-    let attributes = ConnectionAttributes {
-        connection_id: Some(msg.connection_id.clone()),
-        ..Default::default()
-    };
-    ConnOpenConfirm::from(attributes).into()
+) -> Result<NamadaIbcEvent> {
+    let counterparty_conn_id =
+        counterparty.connection_id().ok_or_else(|| {
+            Error::Connection("No counterparty connection".to_string())
+        })?;
+    Ok(AbciEvent::from(ConnOpenConfirm::new(
+        msg.conn_id_on_b.clone(),
+        client_id.clone(),
+        counterparty_conn_id.clone(),
+        counterparty.client_id().clone(),
+    ))
+    .into())
 }
 
 /// Makes OpenInitChannel event
 pub fn make_open_init_channel_event(
     channel_id: &ChannelId,
     msg: &MsgChannelOpenInit,
-) -> IbcEvent {
-    let connection_id = match msg.channel.connection_hops().get(0) {
+) -> NamadaIbcEvent {
+    let connection_id = match msg.chan_end_on_a.connection_hops().get(0) {
         Some(c) => c.clone(),
         None => ConnectionId::default(),
     };
-    let attributes = ChanOpenInit {
-        height: Height::default(),
-        port_id: msg.port_id.clone(),
-        channel_id: Some(*channel_id),
+    AbciEvent::from(ChanOpenInit::new(
+        msg.port_id_on_a.clone(),
+        channel_id.clone(),
+        msg.port_id_on_a.clone(),
         connection_id,
-        counterparty_port_id: msg.channel.counterparty().port_id().clone(),
-        counterparty_channel_id: msg
-            .channel
-            .counterparty()
-            .channel_id()
-            .cloned(),
-    };
-    attributes.into()
+        msg.chan_end_on_a.version().clone(),
+    ))
+    .into()
 }
 
 /// Makes OpenTryChannel event
 pub fn make_open_try_channel_event(
     channel_id: &ChannelId,
     msg: &MsgChannelOpenTry,
-) -> IbcEvent {
-    let connection_id = match msg.channel.connection_hops().get(0) {
+) -> Result<NamadaIbcEvent> {
+    let connection_id = match msg.chan_end_on_b.connection_hops().get(0) {
         Some(c) => c.clone(),
         None => ConnectionId::default(),
     };
-    let attributes = ChanOpenTry {
-        height: Height::default(),
-        port_id: msg.port_id.clone(),
-        channel_id: Some(*channel_id),
+    let counterparty = msg.chan_end_on_b.counterparty();
+    let counterparty_channel_id = counterparty
+        .channel_id()
+        .ok_or_else(|| Error::Channel("No counterparty channel".to_string()))?;
+    Ok(AbciEvent::from(ChanOpenTry::new(
+        msg.port_id_on_b.clone(),
+        channel_id.clone(),
+        counterparty.port_id().clone(),
+        counterparty_channel_id.clone(),
         connection_id,
-        counterparty_port_id: msg.channel.counterparty().port_id().clone(),
-        counterparty_channel_id: msg
-            .channel
-            .counterparty()
-            .channel_id()
-            .cloned(),
-    };
-    attributes.into()
+        msg.version_on_a.clone(),
+    ))
+    .into())
 }
 
 /// Makes OpenAckChannel event
 pub fn make_open_ack_channel_event(
     msg: &MsgChannelOpenAck,
     channel: &ChannelEnd,
-) -> Result<IbcEvent> {
+) -> Result<NamadaIbcEvent> {
     let conn_id = get_connection_id_from_channel(channel)?;
     let counterparty = channel.counterparty();
-    let attributes = ChanOpenAck {
-        height: Height::default(),
-        port_id: msg.port_id.clone(),
-        channel_id: Some(msg.channel_id),
-        counterparty_channel_id: Some(msg.counterparty_channel_id),
-        connection_id: conn_id.clone(),
-        counterparty_port_id: counterparty.port_id().clone(),
-    };
-    Ok(attributes.into())
+    let counterparty_channel_id = counterparty
+        .channel_id()
+        .ok_or_else(|| Error::Channel("No counterparty channel".to_string()))?;
+    Ok(AbciEvent::from(ChanOpenAck::new(
+        msg.port_id_on_a.clone(),
+        msg.chan_id_on_a.clone(),
+        counterparty.port_id().clone(),
+        counterparty_channel_id.clone(),
+        conn_id.clone(),
+    ))
+    .into())
 }
 
 /// Makes OpenConfirmChannel event
 pub fn make_open_confirm_channel_event(
     msg: &MsgChannelOpenConfirm,
     channel: &ChannelEnd,
-) -> Result<IbcEvent> {
+) -> Result<NamadaIbcEvent> {
     let conn_id = get_connection_id_from_channel(channel)?;
     let counterparty = channel.counterparty();
-    let attributes = ChanOpenConfirm {
-        height: Height::default(),
-        port_id: msg.port_id.clone(),
-        channel_id: Some(msg.channel_id),
-        connection_id: conn_id.clone(),
-        counterparty_port_id: counterparty.port_id().clone(),
-        counterparty_channel_id: counterparty.channel_id().cloned(),
-    };
-    Ok(attributes.into())
+    let counterparty_channel_id = counterparty
+        .channel_id()
+        .ok_or_else(|| Error::Channel("No counterparty channel".to_string()))?;
+    Ok(AbciEvent::from(ChanOpenConfirm::new(
+        msg.port_id_on_b.clone(),
+        msg.chan_id_on_b.clone(),
+        counterparty.port_id().clone(),
+        counterparty_channel_id.clone(),
+        conn_id.clone(),
+    ))
+    .into())
 }
 
 /// Makes CloseInitChannel event
 pub fn make_close_init_channel_event(
     msg: &MsgChannelCloseInit,
     channel: &ChannelEnd,
-) -> Result<IbcEvent> {
+) -> Result<NamadaIbcEvent> {
     let conn_id = get_connection_id_from_channel(channel)?;
     let counterparty = channel.counterparty();
-    let attributes = ChanCloseInit {
-        height: Height::default(),
-        port_id: msg.port_id.clone(),
-        channel_id: msg.channel_id,
-        connection_id: conn_id.clone(),
-        counterparty_port_id: counterparty.port_id().clone(),
-        counterparty_channel_id: counterparty.channel_id().cloned(),
-    };
-    Ok(attributes.into())
+    let counterparty_channel_id = counterparty
+        .channel_id()
+        .ok_or_else(|| Error::Channel("No counterparty channel".to_string()))?;
+    Ok(AbciEvent::from(ChanCloseInit::new(
+        msg.port_id_on_a.clone(),
+        msg.chan_id_on_a.clone(),
+        counterparty.port_id().clone(),
+        counterparty_channel_id.clone(),
+        conn_id.clone(),
+    ))
+    .into())
 }
 
 /// Makes CloseConfirmChannel event
 pub fn make_close_confirm_channel_event(
     msg: &MsgChannelCloseConfirm,
     channel: &ChannelEnd,
-) -> Result<IbcEvent> {
+) -> Result<NamadaIbcEvent> {
     let conn_id = get_connection_id_from_channel(channel)?;
     let counterparty = channel.counterparty();
-    let attributes = ChanCloseConfirm {
-        height: Height::default(),
-        port_id: msg.port_id.clone(),
-        channel_id: Some(msg.channel_id),
-        connection_id: conn_id.clone(),
-        counterparty_port_id: counterparty.port_id.clone(),
-        counterparty_channel_id: counterparty.channel_id().cloned(),
-    };
-    Ok(attributes.into())
+    let counterparty_channel_id = counterparty
+        .channel_id()
+        .ok_or_else(|| Error::Channel("No counterparty channel".to_string()))?;
+    Ok(AbciEvent::from(ChanCloseConfirm::new(
+        msg.port_id_on_b.clone(),
+        msg.chan_id_on_b.clone(),
+        counterparty.port_id().clone(),
+        counterparty_channel_id.clone(),
+        conn_id.clone(),
+    ))
+    .into())
 }
 
 fn get_connection_id_from_channel(
@@ -1569,37 +1643,91 @@ fn get_connection_id_from_channel(
 }
 
 /// Makes SendPacket event
-pub fn make_send_packet_event(packet: Packet) -> IbcEvent {
-    IbcEvent::SendPacket(SendPacket {
-        height: packet.timeout_height,
+pub fn make_send_packet_event(
+    packet: Packet,
+    order: &Order,
+    connection_id: &ConnectionId,
+) -> Result<NamadaIbcEvent> {
+    let abci_event = AbciEvent::try_from(SendPacket::new(
         packet,
-    })
+        order.clone(),
+        connection_id.clone(),
+    ))
+    .map_err(|e| {
+        Error::SendingToken(format!(
+            "Conversion of SendPacket event failed: error {}",
+            e
+        ))
+    })?;
+    Ok(abci_event.into())
 }
 
 /// Makes WriteAcknowledgement event
-pub fn make_write_ack_event(packet: Packet, ack: Vec<u8>) -> IbcEvent {
-    IbcEvent::WriteAcknowledgement(WriteAcknowledgement {
-        // this height is not used
-        height: Height::default(),
+pub fn make_write_ack_event(
+    packet: Packet,
+    ack: &Acknowledgement,
+    connection_id: &ConnectionId,
+) -> Result<NamadaIbcEvent> {
+    let abci_event = AbciEvent::try_from(WriteAcknowledgement::new(
         packet,
-        ack,
-    })
+        ack.as_ref().to_vec().into(),
+        connection_id.clone(),
+    ))
+    .map_err(|e| {
+        Error::ReceivingToken(format!(
+            "Conversion of packet data or acknowledgment failed: error {}",
+            e
+        ))
+    })?;
+    Ok(abci_event.into())
 }
 
 /// Makes AcknowledgePacket event
-pub fn make_ack_event(packet: Packet) -> IbcEvent {
-    IbcEvent::AcknowledgePacket(AcknowledgePacket {
-        // this height is not used
-        height: Height::default(),
+pub fn make_ack_event(
+    packet: Packet,
+    order: &Order,
+    connection_id: &ConnectionId,
+) -> NamadaIbcEvent {
+    let abci_event = AbciEvent::try_from(AcknowledgePacket::new(
         packet,
-    })
+        order.clone(),
+        connection_id.clone(),
+    ))
+    .expect("The conversion shouldn't fail");
+    abci_event.into()
 }
 
 /// Makes TimeoutPacket event
-pub fn make_timeout_event(packet: Packet) -> IbcEvent {
-    IbcEvent::TimeoutPacket(TimeoutPacket {
-        // this height is not used
-        height: Height::default(),
-        packet,
-    })
+pub fn make_timeout_event(packet: Packet, order: &Order) -> NamadaIbcEvent {
+    let abci_event =
+        AbciEvent::try_from(TimeoutPacket::new(packet, order.clone()))
+            .expect("The conversion shouldn't fail");
+    abci_event.into()
+}
+
+fn decode_client_state(any_client_state: Any) -> Result<Box<dyn ClientState>> {
+    if let Ok(client_state) = TmClientState::try_from(any_client_state.clone())
+    {
+        return Ok(client_state.into_box());
+    }
+
+    #[cfg(any(feature = "ibc-mocks-abcipp", feature = "ibc-mocks"))]
+    if let Ok(client_state) = MockClientState::try_from(any_client_state) {
+        return Ok(client_state.into_box());
+    }
+
+    Err(Error::Client("Unknown client state was given".to_string()))
+}
+
+fn decode_header(any_header: Any) -> Result<Box<dyn Header>> {
+    if let Ok(header) = TmHeader::try_from(any_header.clone()) {
+        return Ok(header.into_box());
+    }
+
+    #[cfg(any(feature = "ibc-mocks-abcipp", feature = "ibc-mocks"))]
+    if let Ok(header) = MockHeader::try_from(any_header.clone()) {
+        return Ok(header.into_box());
+    }
+
+    Err(Error::Client("Unknown header was given".to_string()))
 }

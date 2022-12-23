@@ -24,8 +24,8 @@ use sha2::Digest;
 use thiserror::Error;
 
 use super::{Ibc, StateChange};
-use crate::ibc::core::ics02_client::client_consensus::AnyConsensusState;
-use crate::ibc::core::ics02_client::client_state::AnyClientState;
+use crate::ibc::core::ics02_client::client_state::ClientState;
+use crate::ibc::core::ics02_client::consensus_state::ConsensusState;
 use crate::ibc::core::ics02_client::context::ClientReader;
 use crate::ibc::core::ics02_client::height::Height;
 use crate::ibc::core::ics03_connection::connection::ConnectionEnd;
@@ -46,20 +46,16 @@ use crate::ibc::core::ics04_channel::msgs::chan_open_confirm::MsgChannelOpenConf
 use crate::ibc::core::ics04_channel::msgs::chan_open_try::MsgChannelOpenTry;
 use crate::ibc::core::ics04_channel::msgs::{ChannelMsg, PacketMsg};
 use crate::ibc::core::ics04_channel::packet::{Receipt, Sequence};
-use crate::ibc::core::ics05_port::capabilities::{
-    Capability, ChannelCapability,
-};
-use crate::ibc::core::ics05_port::context::PortReader;
 use crate::ibc::core::ics24_host::identifier::{
     ChannelId, ClientId, ConnectionId, PortChannelId, PortId,
 };
-use crate::ibc::core::ics26_routing::context::ModuleId;
 use crate::ibc::core::ics26_routing::msgs::Ics26Envelope;
 use crate::ibc::proofs::Proofs;
 use crate::ibc::timestamp::Timestamp;
+use crate::ibc_proto::protobuf::Protobuf;
 use crate::ledger::native_vp::{Error as NativeVpError, VpEnv};
 use crate::tendermint::Time;
-use crate::tendermint_proto::Protobuf;
+use crate::tendermint_proto::Protobuf as TmProtobuf;
 use crate::vm::WasmCacheAccess;
 
 #[allow(missing_docs)]
@@ -95,6 +91,8 @@ pub enum Error {
     IbcStorage(IbcStorageError),
     #[error("IBC event error: {0}")]
     IbcEvent(String),
+    #[error("IBC proof error: {0}")]
+    Proof(String),
 }
 
 /// IBC channel functions result
@@ -138,10 +136,7 @@ where
             })?;
 
         let channel = self
-            .channel_end(&(
-                port_channel_id.port_id.clone(),
-                port_channel_id.channel_id,
-            ))
+            .channel_end(&port_channel_id.port_id, &port_channel_id.channel_id)
             .map_err(|_| {
                 Error::InvalidChannel(format!(
                     "The channel doesn't exist: Port/Channel {}",
@@ -181,7 +176,8 @@ where
                     let event = make_open_try_channel_event(
                         &port_channel_id.channel_id,
                         &msg,
-                    );
+                    )
+                    .map_err(|e| Error::IbcEvent(e.to_string()))?;
                     self.check_emitted_event(event)
                         .map_err(|e| Error::IbcEvent(e.to_string()))
                 }
@@ -291,7 +287,7 @@ where
                     },
                 )?)
             }
-            Ics26Envelope::Ics4PacketMsg(PacketMsg::ToPacket(msg)) => {
+            Ics26Envelope::Ics4PacketMsg(PacketMsg::TimeoutPacket(msg)) => {
                 if !channel.state_matches(&State::Closed)
                     || !prev_channel.state().is_open()
                 {
@@ -307,9 +303,11 @@ where
                     msg.packet.sequence,
                 );
                 self.validate_commitment_absence(commitment_key)?;
-                Some(make_timeout_event(msg.packet))
+                Some(make_timeout_event(msg.packet, channel.ordering()))
             }
-            Ics26Envelope::Ics4PacketMsg(PacketMsg::ToClosePacket(msg)) => {
+            Ics26Envelope::Ics4PacketMsg(PacketMsg::TimeoutOnClosePacket(
+                msg,
+            )) => {
                 let commitment_key = (
                     msg.packet.source_port,
                     msg.packet.source_channel,
@@ -407,12 +405,20 @@ where
     ) -> Result<()> {
         let expected_my_side =
             Counterparty::new(port_channel_id.port_id.clone(), None);
+        let proofs = Proofs::new(
+            msg.proof_chan_end_on_a.clone(),
+            None,
+            None,
+            None,
+            msg.proof_height_on_a,
+        )
+        .map_err(|e| Error::Proof(e.to_string()))?;
         self.verify_proofs(
-            msg.proofs.height(),
+            msg.proof_height_on_a,
             channel,
             expected_my_side,
             State::Init,
-            &msg.proofs,
+            &proofs,
         )
     }
 
@@ -424,7 +430,7 @@ where
     ) -> Result<()> {
         match channel.counterparty().channel_id() {
             Some(counterpart_channel_id) => {
-                if *counterpart_channel_id != msg.counterparty_channel_id {
+                if *counterpart_channel_id != msg.chan_id_on_b {
                     return Err(Error::InvalidChannel(format!(
                         "The counterpart channel ID mismatched: ID {}",
                         counterpart_channel_id
@@ -443,12 +449,20 @@ where
             port_channel_id.port_id.clone(),
             Some(port_channel_id.channel_id),
         );
+        let proofs = Proofs::new(
+            msg.proof_chan_end_on_b.clone(),
+            None,
+            None,
+            None,
+            msg.proof_height_on_b,
+        )
+        .map_err(|e| Error::Proof(e.to_string()))?;
         self.verify_proofs(
-            msg.proofs.height(),
+            msg.proof_height_on_b,
             channel,
             expected_my_side,
             State::TryOpen,
-            &msg.proofs,
+            &proofs,
         )
     }
 
@@ -462,12 +476,20 @@ where
             port_channel_id.port_id.clone(),
             Some(port_channel_id.channel_id),
         );
+        let proofs = Proofs::new(
+            msg.proof_chan_end_on_a.clone(),
+            None,
+            None,
+            None,
+            msg.proof_height_on_a,
+        )
+        .map_err(|e| Error::Proof(e.to_string()))?;
         self.verify_proofs(
-            msg.proofs.height(),
+            msg.proof_height_on_a,
             channel,
             expected_my_side,
             State::Open,
-            &msg.proofs,
+            &proofs,
         )
     }
 
@@ -481,12 +503,20 @@ where
             port_channel_id.port_id.clone(),
             Some(port_channel_id.channel_id),
         );
+        let proofs = Proofs::new(
+            msg.proof_chan_end_on_a.clone(),
+            None,
+            None,
+            None,
+            msg.proof_height_on_a,
+        )
+        .map_err(|e| Error::Proof(e.to_string()))?;
         self.verify_proofs(
-            msg.proofs.height(),
+            msg.proof_height_on_a,
             channel,
             expected_my_side,
             State::Closed,
-            &msg.proofs,
+            &proofs,
         )
     }
 
@@ -701,11 +731,12 @@ where
 {
     fn channel_end(
         &self,
-        port_channel_id: &(PortId, ChannelId),
+        port_id: &PortId,
+        channel_id: &ChannelId,
     ) -> Ics04Result<ChannelEnd> {
         let port_channel_id = PortChannelId {
-            port_id: port_channel_id.0.clone(),
-            channel_id: port_channel_id.1,
+            port_id: port_id.clone(),
+            channel_id: channel_id.clone(),
         };
         let key = channel_key(&port_channel_id);
         match self.ctx.read_bytes_post(&key) {
@@ -771,7 +802,7 @@ where
     fn client_state(
         &self,
         client_id: &ClientId,
-    ) -> Ics04Result<AnyClientState> {
+    ) -> Ics04Result<Box<dyn ClientState>> {
         ConnectionReader::client_state(self, client_id)
             .map_err(Ics04Error::ics03_connection)
     }
@@ -780,109 +811,103 @@ where
         &self,
         client_id: &ClientId,
         height: Height,
-    ) -> Ics04Result<AnyConsensusState> {
+    ) -> Ics04Result<Box<dyn ConsensusState>> {
         ConnectionReader::client_consensus_state(self, client_id, height)
             .map_err(Ics04Error::ics03_connection)
     }
 
-    fn authenticated_capability(
-        &self,
-        port_id: &PortId,
-    ) -> Ics04Result<ChannelCapability> {
-        let (_, port_cap) = self
-            .lookup_module_by_port(port_id)
-            .map_err(|_| Ics04Error::no_port_capability(port_id.clone()))?;
-        if self.authenticate(port_id.clone(), &port_cap) {
-            let cap: Capability = port_cap.into();
-            Ok(cap.into())
-        } else {
-            Err(Ics04Error::invalid_port_capability())
-        }
-    }
-
     fn get_next_sequence_send(
         &self,
-        port_channel_id: &(PortId, ChannelId),
+        port_id: &PortId,
+        channel_id: &ChannelId,
     ) -> Ics04Result<Sequence> {
         let port_channel_id = PortChannelId {
-            port_id: port_channel_id.0.clone(),
-            channel_id: port_channel_id.1,
+            port_id: port_id.clone(),
+            channel_id: channel_id.clone(),
         };
         let key = next_sequence_send_key(&port_channel_id);
         self.get_sequence(&key).map_err(|_| {
-            Ics04Error::missing_next_send_seq((
-                port_channel_id.port_id,
-                port_channel_id.channel_id,
-            ))
+            Ics04Error::missing_next_send_seq(
+                port_id.clone(),
+                channel_id.clone(),
+            )
         })
     }
 
     fn get_next_sequence_recv(
         &self,
-        port_channel_id: &(PortId, ChannelId),
+        port_id: &PortId,
+        channel_id: &ChannelId,
     ) -> Ics04Result<Sequence> {
         let port_channel_id = PortChannelId {
-            port_id: port_channel_id.0.clone(),
-            channel_id: port_channel_id.1,
+            port_id: port_id.clone(),
+            channel_id: channel_id.clone(),
         };
         let key = next_sequence_recv_key(&port_channel_id);
         self.get_sequence(&key).map_err(|_| {
-            Ics04Error::missing_next_recv_seq((
-                port_channel_id.port_id,
-                port_channel_id.channel_id,
-            ))
+            Ics04Error::missing_next_recv_seq(
+                port_id.clone(),
+                channel_id.clone(),
+            )
         })
     }
 
     fn get_next_sequence_ack(
         &self,
-        port_channel_id: &(PortId, ChannelId),
+        port_id: &PortId,
+        channel_id: &ChannelId,
     ) -> Ics04Result<Sequence> {
         let port_channel_id = PortChannelId {
-            port_id: port_channel_id.0.clone(),
-            channel_id: port_channel_id.1,
+            port_id: port_id.clone(),
+            channel_id: channel_id.clone(),
         };
         let key = next_sequence_ack_key(&port_channel_id);
         self.get_sequence(&key).map_err(|_| {
-            Ics04Error::missing_next_ack_seq((
-                port_channel_id.port_id,
-                port_channel_id.channel_id,
-            ))
+            Ics04Error::missing_next_ack_seq(
+                port_id.clone(),
+                channel_id.clone(),
+            )
         })
     }
 
     fn get_packet_commitment(
         &self,
-        key: &(PortId, ChannelId, Sequence),
+        port_id: &PortId,
+        channel_id: &ChannelId,
+        sequence: Sequence,
     ) -> Ics04Result<PacketCommitment> {
-        let commitment_key = commitment_key(&key.0, &key.1, key.2);
+        let commitment_key = commitment_key(port_id, channel_id, sequence);
         match self.ctx.read_bytes_post(&commitment_key) {
             Ok(Some(value)) => Ok(value.into()),
-            Ok(None) => Err(Ics04Error::packet_commitment_not_found(key.2)),
+            Ok(None) => Err(Ics04Error::packet_commitment_not_found(sequence)),
             Err(_) => Err(Ics04Error::implementation_specific()),
         }
     }
 
     fn get_packet_receipt(
         &self,
-        key: &(PortId, ChannelId, Sequence),
+        port_id: &PortId,
+        channel_id: &ChannelId,
+        sequence: Sequence,
     ) -> Ics04Result<Receipt> {
-        let receipt_key = receipt_key(&key.0, &key.1, key.2);
+        let receipt_key = receipt_key(port_id, channel_id, sequence);
         let expect = PacketReceipt::default().as_bytes().to_vec();
         match self.ctx.read_bytes_post(&receipt_key) {
             Ok(Some(v)) if v == expect => Ok(Receipt::Ok),
-            _ => Err(Ics04Error::packet_receipt_not_found(key.2)),
+            _ => Err(Ics04Error::packet_receipt_not_found(sequence)),
         }
     }
 
     fn get_packet_acknowledgement(
         &self,
-        key: &(PortId, ChannelId, Sequence),
+        port_id: &PortId,
+        channel_id: &ChannelId,
+        sequence: Sequence,
     ) -> Ics04Result<AcknowledgementCommitment> {
-        let ack_key = ack_key(&key.0, &key.1, key.2);
+        let ack_key = ack_key(port_id, channel_id, sequence);
         match self.ctx.read_bytes_post(&ack_key) {
             Ok(Some(value)) => Ok(value.into()),
-            Ok(None) => Err(Ics04Error::packet_commitment_not_found(key.2)),
+            Ok(None) => Err(Ics04Error::packet_commitment_not_found(sequence)),
             Err(_) => Err(Ics04Error::implementation_specific()),
         }
     }
@@ -898,13 +923,15 @@ where
     fn host_consensus_state(
         &self,
         height: Height,
-    ) -> Ics04Result<AnyConsensusState> {
+    ) -> Ics04Result<Box<dyn ConsensusState>> {
         ClientReader::host_consensus_state(self, height).map_err(|e| {
             Ics04Error::ics03_connection(Ics03Error::ics02_client(e))
         })
     }
 
-    fn pending_host_consensus_state(&self) -> Ics04Result<AnyConsensusState> {
+    fn pending_host_consensus_state(
+        &self,
+    ) -> Ics04Result<Box<dyn ConsensusState>> {
         ClientReader::pending_host_consensus_state(self).map_err(|e| {
             Ics04Error::ics03_connection(Ics03Error::ics02_client(e))
         })
@@ -963,18 +990,6 @@ where
             }
             Err(_) => Duration::default(),
         }
-    }
-
-    fn lookup_module_by_channel(
-        &self,
-        _channel_id: &ChannelId,
-        port_id: &PortId,
-    ) -> Ics04Result<(ModuleId, ChannelCapability)> {
-        let (module_id, port_cap) = self
-            .lookup_module_by_port(port_id)
-            .map_err(Ics04Error::ics05_port)?;
-        let cap: Capability = port_cap.into();
-        Ok((module_id, cap.into()))
     }
 }
 

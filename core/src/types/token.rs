@@ -423,22 +423,23 @@ pub enum TransferError {
 }
 
 #[cfg(any(feature = "abciplus", feature = "abcipp"))]
-impl TryFrom<crate::ledger::ibc::data::FungibleTokenPacketData> for Transfer {
+impl TryFrom<crate::ibc::applications::transfer::packet::PacketData>
+    for Transfer
+{
     type Error = TransferError;
 
     fn try_from(
-        data: crate::ledger::ibc::data::FungibleTokenPacketData,
+        data: crate::ibc::applications::transfer::packet::PacketData,
     ) -> Result<Self, Self::Error> {
         let source =
             Address::decode(&data.sender).map_err(TransferError::Address)?;
         let target =
             Address::decode(&data.receiver).map_err(TransferError::Address)?;
-        let token_str =
-            data.denom.split('/').last().ok_or(TransferError::NoToken)?;
+        let token_str = data.token.denom.base_denom.to_string();
         let token =
             Address::decode(token_str).map_err(TransferError::Address)?;
-        let amount =
-            Amount::from_str(&data.amount).map_err(TransferError::Amount)?;
+        let amount = Amount::from_str(&data.token.amount.to_string())
+            .map_err(TransferError::Amount)?;
         Ok(Self {
             source,
             target,

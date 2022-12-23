@@ -35,37 +35,21 @@ impl std::fmt::Display for IbcEvent {
 mod ibc_rs_conversion {
     use std::collections::HashMap;
 
-    use thiserror::Error;
-
     use super::IbcEvent;
-    use crate::ibc::events::{Error as IbcEventError, IbcEvent as RawIbcEvent};
-    use crate::tendermint::abci::Event as AbciEvent;
+    use crate::tendermint_proto::abci::Event as AbciEvent;
 
-    #[allow(missing_docs)]
-    #[derive(Error, Debug)]
-    pub enum Error {
-        #[error("IBC event error: {0}")]
-        IbcEvent(IbcEventError),
-    }
-
-    /// Conversion functions result
-    pub type Result<T> = std::result::Result<T, Error>;
-
-    impl TryFrom<RawIbcEvent> for IbcEvent {
-        type Error = Error;
-
-        fn try_from(e: RawIbcEvent) -> Result<Self> {
-            let event_type = e.event_type().as_str().to_string();
-            let abci_event = AbciEvent::try_from(e).map_err(Error::IbcEvent)?;
+    impl From<AbciEvent> for IbcEvent {
+        fn from(abci_event: AbciEvent) -> Self {
+            let event_type = abci_event.r#type;
             let attributes: HashMap<_, _> = abci_event
                 .attributes
                 .iter()
                 .map(|tag| (tag.key.to_string(), tag.value.to_string()))
                 .collect();
-            Ok(Self {
+            Self {
                 event_type,
                 attributes,
-            })
+            }
         }
     }
 }
