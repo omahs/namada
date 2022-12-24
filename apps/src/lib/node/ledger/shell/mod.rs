@@ -26,7 +26,9 @@ use namada::ledger::gas::BlockGasMeter;
 use namada::ledger::pos::namada_proof_of_stake::types::{
     ActiveValidator, ValidatorSetUpdate,
 };
-use namada::ledger::pos::namada_proof_of_stake::PosBase;
+use namada::ledger::pos::namada_proof_of_stake::{
+    process_slashes, slash_new, PosBase,
+};
 use namada::ledger::storage::write_log::WriteLog;
 use namada::ledger::storage::{
     DBIter, Sha256Hasher, Storage, StorageHasher, DB,
@@ -411,7 +413,7 @@ where
     }
 
     /// Apply PoS slashes from the evidence
-    fn slash(&mut self) {
+    fn record_slashes_from_evidence(&mut self) {
         if !self.byzantine_validators.is_empty() {
             let byzantine_validators =
                 mem::take(&mut self.byzantine_validators);
@@ -444,6 +446,8 @@ where
                         continue;
                     }
                 };
+                // Disregard evidences that occurred at least unbonding_len
+                // epochs before the current epoch
                 if evidence_epoch + pos_params.unbonding_len <= current_epoch {
                     tracing::info!(
                         "Skipping outdated evidence from epoch \
@@ -505,7 +509,18 @@ where
                     evidence_epoch,
                     evidence_height
                 );
-                if let Err(err) = self.storage.slash(
+                // if let Err(err) = self.storage.slash(
+                //     &pos_params,
+                //     current_epoch,
+                //     evidence_epoch,
+                //     evidence_height,
+                //     slash_type,
+                //     &validator,
+                // ) {
+                //     tracing::error!("Error in slashing: {}", err);
+                // }
+                if let Err(err) = slash_new(
+                    &mut self.storage,
                     &pos_params,
                     current_epoch,
                     evidence_epoch,
@@ -516,6 +531,19 @@ where
                     tracing::error!("Error in slashing: {}", err);
                 }
             }
+        }
+    }
+
+    /// Process and apply slashes that have already been recorded for the
+    /// current epoch
+    fn process_slashes(&mut self) {
+        let current_epoch = self.storage.block.epoch;
+        if let Err(err) = process_slashes(&mut self.storage, current_epoch) {
+            tracing::error!(
+                "Error while processing slashes queued for epoch {}: {}",
+                current_epoch,
+                err
+            );
         }
     }
 
