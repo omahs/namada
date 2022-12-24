@@ -98,6 +98,17 @@ pub type BondsNew = crate::epoched_new::EpochedDelta<
     21,
 >;
 
+/// Slashes indexed by validator address
+pub type ValidatorSlashes = NestedMap<Address, SlashesNew>;
+
+/// Epoched slashes, where the outer epoch key is the epoch in which the slash
+/// is processed
+pub type EpochedSlashes = crate::epoched_new::NestedEpoched<
+    ValidatorSlashes,
+    crate::epoched_new::OffsetUnbondingLen,
+    U64_MAX,
+>;
+
 /// Epochs validator's unbonds
 /// TODO: should we make a NestedEpochedDelta for this where outer epoch is end
 /// and inner is begin???
@@ -308,7 +319,9 @@ pub enum ValidatorState {
     /// A `Candidate` validator may participate in the consensus. It is either
     /// in the active or inactive validator set.
     Candidate,
-    // TODO consider adding `Jailed`
+    /// A `Jailed` validator has been prohibited from participating in
+    /// consensus due to a misbehavior
+    Jailed,
 }
 
 /// A bond is either a validator's self-bond or a delegation from a regular
@@ -368,7 +381,7 @@ pub type Slashes = Vec<Slash>;
 #[derive(Debug, Clone, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct SlashNew {
     /// Epoch at which the slashable event occurred.
-    pub epoch: Epoch,
+    pub infraction_epoch: Epoch,
     /// Block height at which the slashable event occurred.
     pub block_height: u64,
     /// A type of slashsable event.
@@ -379,7 +392,7 @@ pub struct SlashNew {
 /// their staked tokens at and before the epoch of the slash.
 pub type SlashesNew = LazyVec<SlashNew>;
 
-/// A type of slashsable event.
+/// A type of slashable event.
 #[derive(Debug, Clone, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub enum SlashType {
     /// Duplicate block vote.

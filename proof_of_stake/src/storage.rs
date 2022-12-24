@@ -22,6 +22,7 @@ const VALIDATOR_COMMISSION_RATE_STORAGE_KEY: &str = "commission_rate_NEW";
 const VALIDATOR_MAX_COMMISSION_CHANGE_STORAGE_KEY: &str =
     "max_commission_rate_change_NEW";
 const SLASHES_PREFIX: &str = "slash_NEW";
+const ALL_SLASHES_KEY: &str = "all_NEW";
 const BOND_STORAGE_KEY: &str = "bond_NEW";
 const BOND_AMOUNT_STORAGE_KEY: &str = "bond_amount";
 const BOND_REMAINING_STORAGE_KEY: &str = "bond_remaining";
@@ -219,6 +220,13 @@ pub fn is_validator_deltas_key(key: &Key) -> Option<&Address> {
 pub fn slashes_prefix() -> Key {
     Key::from(ADDRESS.to_db_key())
         .push(&SLASHES_PREFIX.to_owned())
+        .expect("Cannot obtain a storage key")
+}
+
+/// Storage key for all slashes.
+pub fn all_slashes_key() -> Key {
+    slashes_prefix()
+        .push(&ALL_SLASHES_KEY.to_owned())
         .expect("Cannot obtain a storage key")
 }
 
