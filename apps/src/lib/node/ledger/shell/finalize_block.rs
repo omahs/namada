@@ -1,5 +1,6 @@
 //! Implementation of the `FinalizeBlock` ABCI++ method for the Shell
 
+use namada::ledger::pos::namada_proof_of_stake;
 use namada::ledger::pos::types::into_tm_voting_power;
 use namada::ledger::protocol;
 use namada::ledger::storage_api::StorageRead;
@@ -380,11 +381,16 @@ where
     fn update_epoch(&self, response: &mut shim::response::FinalizeBlock) {
         // Apply validator set update
         let (current_epoch, _gas) = self.wl_storage.storage.get_current_epoch();
-        let pos_params = self.wl_storage.read_pos_params();
+        let pos_params =
+            namada_proof_of_stake::read_pos_params(&self.wl_storage).unwrap();
         // TODO ABCI validator updates on block H affects the validator set
         // on block H+2, do we need to update a block earlier?
-        self.wl_storage
-            .validator_set_update(current_epoch, |update| {
+        // self.wl_storage.validator_set_update(current_epoch, |update| {
+        namada_proof_of_stake::validator_set_update_tendermint(
+            &self.wl_storage,
+            &pos_params,
+            current_epoch,
+            |update| {
                 let (consensus_key, power) = match update {
                     ValidatorSetUpdate::Active(ActiveValidator {
                         consensus_key,
@@ -410,7 +416,8 @@ where
                 let pub_key = Some(pub_key);
                 let update = ValidatorUpdate { pub_key, power };
                 response.validator_updates.push(update);
-            });
+            },
+        );
     }
 }
 

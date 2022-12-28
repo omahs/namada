@@ -98,7 +98,7 @@
 //! - add arb invalid storage changes
 //! - add slashes
 
-use namada::ledger::pos::namada_proof_of_stake::PosBase;
+use namada::ledger::pos::namada_proof_of_stake::{init_genesis_new, PosBase};
 use namada::proof_of_stake::parameters::PosParams;
 use namada::proof_of_stake::storage::GenesisValidator;
 use namada::types::storage::Epoch;
@@ -124,10 +124,17 @@ pub fn init_pos(
         }
         tx_env.wl_storage.storage.block.epoch = start_epoch;
         // Initialize PoS storage
-        tx_env
-            .wl_storage
-            .init_genesis(params, genesis_validators.iter(), start_epoch)
-            .unwrap();
+        // tx_env
+        //     .storage
+        //     .init_genesis(params, genesis_validators.iter(), start_epoch)
+        //     .unwrap();
+        init_genesis_new(
+            &mut tx_env.wl_storage,
+            params,
+            genesis_validators.to_vec().into_iter(),
+            start_epoch,
+        )
+        .unwrap();
 
         // Commit changes in WL to genesis state
         tx_env.commit_genesis();

@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use namada_proof_of_stake::PosReadOnly;
+use namada_proof_of_stake::{self, PosReadOnly};
 
 use crate::ledger::pos::{self, BondId};
 use crate::ledger::queries::types::RequestCtx;
@@ -43,7 +43,17 @@ where
     D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
     H: 'static + StorageHasher + Sync,
 {
-    ctx.wl_storage.is_validator(&addr)
+    println!(
+        "\nLOOKING UP VALIDATOR IN EPOCH {}\n",
+        ctx.wl_storage.storage.block.epoch
+    );
+    let params = namada_proof_of_stake::read_pos_params(ctx.wl_storage)?;
+    namada_proof_of_stake::is_validator(
+        ctx.wl_storage,
+        &addr,
+        &params,
+        ctx.wl_storage.storage.block.epoch,
+    )
 }
 
 /// Get all the validator known addresses. These validators may be in any state,
