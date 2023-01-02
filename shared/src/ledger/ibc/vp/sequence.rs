@@ -1,6 +1,5 @@
 //! IBC validity predicate for sequences
 
-use namada_core::ledger::ibc::actions::packet_from_message;
 use thiserror::Error;
 
 use super::super::storage::{port_channel_id, Error as IbcStorageError};
@@ -51,21 +50,19 @@ where
         let msg = ibc_msg.msg_transfer()?;
         // make a packet
         let channel = self
-            .channel_end(&(
-                port_channel_id.port_id.clone(),
-                port_channel_id.channel_id,
-            ))
+            .channel_end(&port_channel_id.port_id, &port_channel_id.channel_id)
             .map_err(|e| Error::InvalidChannel(e.to_string()))?;
         let next_seq_pre = self
             .get_next_sequence_send_pre(&port_channel_id)
             .map_err(|e| Error::InvalidSequence(e.to_string()))?;
-        let packet =
-            packet_from_message(&msg, next_seq_pre, channel.counterparty());
+        let packet = self
+            .packet_from_message(&msg, next_seq_pre, channel.counterparty())
+            .map_err(|e| Error::InvalidPacket(e.to_string()))?;
         let next_seq = self
-            .get_next_sequence_send(&(
-                port_channel_id.port_id.clone(),
-                port_channel_id.channel_id,
-            ))
+            .get_next_sequence_send(
+                &port_channel_id.port_id,
+                &port_channel_id.channel_id,
+            )
             .map_err(|_| {
                 Error::InvalidSequence(
                     "The nextSequenceSend doesn't exit".to_owned(),
@@ -86,16 +83,18 @@ where
             ));
         }
         // The commitment should have been stored
-        let commitment_key = (
-            port_channel_id.port_id,
-            port_channel_id.channel_id,
+        self.get_packet_commitment(
+            &port_channel_id.port_id,
+            &port_channel_id.channel_id,
             packet.sequence,
-        );
-        self.get_packet_commitment(&commitment_key).map_err(|_| {
+        )
+        .map_err(|_| {
             Error::InvalidSequence(format!(
                 "The commitement doesn't exist: Port/Channel {}/{}, Sequence \
                  {}",
-                commitment_key.0, commitment_key.1, commitment_key.2,
+                port_channel_id.port_id,
+                &port_channel_id.channel_id,
+                packet.sequence,
             ))
         })?;
         Ok(())
@@ -114,10 +113,10 @@ where
             .get_next_sequence_recv_pre(&port_channel_id)
             .map_err(|e| Error::InvalidSequence(e.to_string()))?;
         let next_seq = self
-            .get_next_sequence_recv(&(
-                port_channel_id.port_id.clone(),
-                port_channel_id.channel_id,
-            ))
+            .get_next_sequence_recv(
+                &port_channel_id.port_id,
+                &port_channel_id.channel_id,
+            )
             .map_err(|_| {
                 Error::InvalidSequence(
                     "The nextSequenceRecv doesn't exist".to_owned(),
@@ -138,22 +137,31 @@ where
             ));
         }
         // The receipt and the receipt should have been stored
-        let key = (
-            port_channel_id.port_id,
-            port_channel_id.channel_id,
+        self.get_packet_receipt(
+            &port_channel_id.port_id,
+            &port_channel_id.channel_id,
             packet.sequence,
-        );
-        self.get_packet_receipt(&key).map_err(|_| {
+        )
+        .map_err(|_| {
             Error::InvalidSequence(format!(
                 "The receipt doesn't exist: Port/Channel {}/{}, Sequence {}",
-                key.0, key.1, key.2,
+                port_channel_id.port_id,
+                port_channel_id.channel_id,
+                packet.sequence,
             ))
         })?;
-        self.get_packet_acknowledgement(&key).map_err(|_| {
+        self.get_packet_acknowledgement(
+            &port_channel_id.port_id,
+            &port_channel_id.channel_id,
+            packet.sequence,
+        )
+        .map_err(|_| {
             Error::InvalidSequence(format!(
                 "The acknowledgment doesn't exist: Port/Channel {}/{}, \
                  Sequence {}",
-                key.0, key.1, key.2,
+                port_channel_id.port_id,
+                port_channel_id.channel_id,
+                packet.sequence,
             ))
         })?;
         Ok(())
@@ -172,10 +180,10 @@ where
             .get_next_sequence_ack_pre(&port_channel_id)
             .map_err(|e| Error::InvalidSequence(e.to_string()))?;
         let next_seq = self
-            .get_next_sequence_ack(&(
-                port_channel_id.port_id.clone(),
-                port_channel_id.channel_id,
-            ))
+            .get_next_sequence_ack(
+                &port_channel_id.port_id,
+                &port_channel_id.channel_id,
+            )
             .map_err(|_| {
                 Error::InvalidSequence(
                     "The nextSequenceAck doesn't exist".to_owned(),
@@ -196,16 +204,20 @@ where
             ));
         }
         // The commitment should have been deleted
-        let commitment_key = (
-            port_channel_id.port_id,
-            port_channel_id.channel_id,
-            packet.sequence,
-        );
-        if self.get_packet_commitment(&commitment_key).is_ok() {
+        if self
+            .get_packet_commitment(
+                &port_channel_id.port_id,
+                &port_channel_id.channel_id,
+                packet.sequence,
+            )
+            .is_ok()
+        {
             return Err(Error::InvalidSequence(format!(
                 "The commitement hasn't been deleted yet: Port/Channel {}/{}, \
                  Sequence {}",
-                commitment_key.0, commitment_key.1, commitment_key.2,
+                port_channel_id.port_id,
+                port_channel_id.channel_id,
+                packet.sequence,
             )));
         }
         Ok(())
@@ -216,10 +228,7 @@ where
         port_channel_id: &PortChannelId,
     ) -> Result<bool> {
         let channel = self
-            .channel_end(&(
-                port_channel_id.port_id.clone(),
-                port_channel_id.channel_id,
-            ))
+            .channel_end(&port_channel_id.port_id, &port_channel_id.channel_id)
             .map_err(|_| {
                 Error::InvalidChannel(format!(
                     "The channel doesn't exist: Port/Channel {}",

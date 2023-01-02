@@ -18,12 +18,14 @@ use namada_core::ledger::ibc::storage::{
 use namada_core::ledger::storage::{self as ledger_storage, StorageHasher};
 use namada_core::proto::SignedTxData;
 use namada_core::types::address::{Address, InternalAddress};
+use namada_core::types::chain::ChainId;
 use namada_core::types::ibc::IbcEvent;
 use namada_core::types::storage::Key;
 use thiserror::Error;
 pub use token::{Error as IbcTokenError, IbcToken};
 
 use crate::ibc::core::ics02_client::context::ClientReader;
+use crate::ibc::core::ics24_host::identifier::ChainId as IcsChainId;
 use crate::ledger::native_vp::{self, Ctx, NativeVp, VpEnv};
 use crate::vm::WasmCacheAccess;
 
@@ -70,6 +72,28 @@ where
 {
     /// Context to interact with the host structures.
     pub ctx: Ctx<'a, DB, H, CA>,
+    /// Chain ID
+    chain_id: IcsChainId,
+    /// Client upgrade path
+    upgrade_path: Vec<String>,
+}
+
+impl<'a, DB, H, CA> Ibc<'a, DB, H, CA>
+where
+    DB: ledger_storage::DB + for<'iter> ledger_storage::DBIter<'iter>,
+    H: StorageHasher,
+    CA: 'static + WasmCacheAccess,
+{
+    pub fn new(ctx: Ctx<'a, DB, H, CA>, chain_id: &ChainId) -> Self {
+        Self {
+            ctx,
+            chain_id: IcsChainId::from_string(chain_id.as_str()),
+            upgrade_path: vec![
+                "upgrade".to_string(),
+                "upgradedIBCState".to_string(),
+            ],
+        }
+    }
 }
 
 impl<'a, DB, H, CA> NativeVp for Ibc<'a, DB, H, CA>

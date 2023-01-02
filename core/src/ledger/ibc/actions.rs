@@ -1005,44 +1005,29 @@ pub trait IbcActions {
         msg: &MsgTransfer,
     ) -> std::result::Result<(), Self::Error> {
         // update the deom if it has IbcToken
-        let denom = if let Some(hash) =
-            storage::token_hash_from_denom(&msg.token.denom)
-                .map_err(Error::IbcStorage)?
+        let denom = match storage::token_hash_from_denom(&msg.token.denom)
+            .map_err(Error::IbcStorage)?
         {
-            let denom_key = storage::ibc_denom_key(hash);
-            let denom_bytes =
-                self.read_ibc_data(&denom_key)?.ok_or_else(|| {
+            Some(hash) => {
+                let denom_key = storage::ibc_denom_key(hash);
+                let denom_bytes =
+                    self.read_ibc_data(&denom_key)?.ok_or_else(|| {
+                        Error::SendingToken(format!(
+                            "No original denom: denom_key {}",
+                            denom_key
+                        ))
+                    })?;
+                let denom = std::str::from_utf8(&denom_bytes).map_err(|e| {
                     Error::SendingToken(format!(
-                        "No original denom: denom_key {}",
-                        denom_key
+                        "Decoding the denom failed: denom_key {}, error {}",
+                        denom_key, e
                     ))
                 })?;
-            let denom = std::str::from_utf8(&denom_bytes).map_err(|e| {
-                Error::SendingToken(format!(
-                    "Decoding the denom failed: denom_key {}, error {}",
-                    denom_key, e
-                ))
-            })?;
-            denom.to_string()
-        } else {
-            msg.token.denom.clone()
+                denom.to_string()
+            }
+            None => msg.token.denom.clone(),
         };
-        let coin = PrefixedCoin {
-            denom: PrefixedDenom::from_str(&denom).map_err(|e| {
-                Error::SendingToken(format!(
-                    "Decoding the denom failed: denom {}, error {}",
-                    denom, e
-                ))
-            })?,
-            amount: TransferAmount::from_str(&msg.token.amount).map_err(
-                |e| {
-                    Error::SendingToken(format!(
-                        "Decoding the amount failed: amount {}, error {}",
-                        msg.token.amount, e
-                    ))
-                },
-            )?,
-        };
+        let coin = prefixed_coin(&denom, &msg.token.amount)?;
         let token = storage::token(&coin).map_err(Error::IbcStorage)?;
 
         let source_addr = Address::decode(&msg.sender).map_err(|e| {
@@ -1705,7 +1690,10 @@ pub fn make_timeout_event(packet: Packet, order: &Order) -> NamadaIbcEvent {
     abci_event.into()
 }
 
-fn decode_client_state(any_client_state: Any) -> Result<Box<dyn ClientState>> {
+/// Decode ClientState from Any
+pub fn decode_client_state(
+    any_client_state: Any,
+) -> Result<Box<dyn ClientState>> {
     if let Ok(client_state) = TmClientState::try_from(any_client_state.clone())
     {
         return Ok(client_state.into_box());
@@ -1730,4 +1718,27 @@ fn decode_header(any_header: Any) -> Result<Box<dyn Header>> {
     }
 
     Err(Error::Client("Unknown header was given".to_string()))
+}
+
+/// Make PrefixedCoin from a denomination and an amount as String
+pub fn prefixed_coin(
+    denom: impl AsRef<str>,
+    amount: impl AsRef<str>,
+) -> Result<PrefixedCoin> {
+    Ok(PrefixedCoin {
+        denom: PrefixedDenom::from_str(denom.as_ref()).map_err(|e| {
+            Error::SendingToken(format!(
+                "Decoding the denom failed: denom {}, error {}",
+                denom.as_ref(),
+                e
+            ))
+        })?,
+        amount: TransferAmount::from_str(amount.as_ref()).map_err(|e| {
+            Error::SendingToken(format!(
+                "Decoding the amount failed: amount {}, error {}",
+                amount.as_ref(),
+                e
+            ))
+        })?,
+    })
 }

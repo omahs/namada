@@ -3,13 +3,11 @@
 use thiserror::Error;
 
 use super::Ibc;
+use crate::ibc::applications::transfer::packet::PacketData;
 use crate::ledger::ibc::storage;
 use crate::ledger::native_vp::VpEnv;
 use crate::ledger::storage::{self as ledger_storage, StorageHasher};
-use crate::types::ibc::data::{
-    Error as IbcDataError, FungibleTokenPacketData, IbcMessage,
-};
-use crate::types::storage::KeySeg;
+use crate::types::ibc::data::{Error as IbcDataError, IbcMessage};
 use crate::vm::WasmCacheAccess;
 
 #[allow(missing_docs)]
@@ -37,24 +35,17 @@ where
     pub(super) fn validate_denom(&self, tx_data: &[u8]) -> Result<()> {
         let ibc_msg = IbcMessage::decode(tx_data)?;
         let msg = ibc_msg.msg_recv_packet()?;
-        match serde_json::from_slice::<FungibleTokenPacketData>(
-            &msg.packet.data,
-        ) {
+        match serde_json::from_slice::<PacketData>(&msg.packet.data) {
             Ok(data) => {
-                let denom = format!(
-                    "{}/{}/{}",
-                    &msg.packet.destination_port,
-                    &msg.packet.destination_channel,
-                    &data.denom
-                );
-                let token_hash = storage::calc_hash(&denom);
-                let denom_key = storage::ibc_denom_key(token_hash.raw());
+                let coin = data.token;
+                let token_hash = storage::calc_hash(&coin.denom.to_string());
+                let denom_key = storage::ibc_denom_key(token_hash);
                 match self.ctx.read_bytes_post(&denom_key) {
                     Ok(Some(v)) => match std::str::from_utf8(&v) {
-                        Ok(d) if d == denom => Ok(()),
+                        Ok(d) if d == coin.denom.to_string() => Ok(()),
                         Ok(d) => Err(Error::Denom(format!(
                             "Mismatch the denom: original {}, denom {}",
-                            denom, d
+                            coin.denom, d
                         ))),
                         Err(e) => Err(Error::Denom(format!(
                             "Decoding the denom failed: key {}, error {}",

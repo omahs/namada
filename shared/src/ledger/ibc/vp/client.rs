@@ -1,11 +1,11 @@
 //! IBC validity predicate for client module
 use std::convert::TryInto;
-use std::str::FromStr;
 
 use namada_core::ledger::ibc::actions::{
-    make_create_client_event, make_update_client_event,
+    decode_client_state, make_create_client_event, make_update_client_event,
     make_upgrade_client_event,
 };
+use prost::Message;
 use thiserror::Error;
 
 use super::super::storage::{
@@ -28,9 +28,11 @@ use crate::ibc::core::ics04_channel::context::ChannelReader;
 use crate::ibc::core::ics23_commitment::commitment::CommitmentRoot;
 use crate::ibc::core::ics24_host::identifier::ClientId;
 use crate::ibc::core::ics26_routing::msgs::Ics26Envelope;
+#[cfg(any(feature = "ibc-mocks-abcipp", feature = "ibc-mocks"))]
+use crate::ibc::mock::consensus_state::MockConsensusState;
+use crate::ibc_proto::google::protobuf::Any;
 use crate::ledger::native_vp::VpEnv;
 use crate::ledger::storage::{self, StorageHasher};
-use crate::tendermint_proto::Protobuf;
 use crate::types::ibc::data::{Error as IbcDataError, IbcMessage};
 use crate::types::storage::{BlockHeight, Key};
 use crate::vm::WasmCacheAccess;
@@ -245,13 +247,13 @@ where
         }
         // check the type of data in tx_data
         let ibc_msg = IbcMessage::decode(tx_data)?;
-        match ibc_msg.0 {
-            Ics26Envelope::Ics2Msg(ClientMsg::UpdateClient(msg)) => {
-                self.verify_update_client(client_id, msg)
-            }
-            Ics26Envelope::Ics2Msg(ClientMsg::UpgradeClient(msg)) => {
-                self.verify_upgrade_client(client_id, msg)
-            }
+        match ibc_msg {
+            IbcMessage::Ics26(Ics26Envelope::Ics2Msg(
+                ClientMsg::UpdateClient(msg),
+            )) => self.verify_update_client(client_id, msg),
+            IbcMessage::Ics26(Ics26Envelope::Ics2Msg(
+                ClientMsg::UpgradeClient(msg),
+            )) => self.verify_upgrade_client(client_id, msg),
             _ => Err(Error::InvalidStateChange(format!(
                 "The state change of the client is invalid: ID {}",
                 client_id
@@ -262,7 +264,7 @@ where
     fn verify_update_client(
         &self,
         client_id: &ClientId,
-        msg: MsgUpdateAnyClient,
+        msg: MsgUpdateClient,
     ) -> Result<()> {
         if msg.client_id != *client_id {
             return Err(Error::InvalidClient(format!(
@@ -287,15 +289,11 @@ where
                     client_id, height
                 ))
             })?;
-        // check the prior states
-        let prev_client_state = self.client_state_pre(client_id)?;
 
-        let client = AnyClient::from_client_type(client_state.client_type());
-        let (new_client_state, new_consensus_state) = client
+        let updated_state = client_state
             .check_header_and_update_state(
                 self,
                 client_id.clone(),
-                prev_client_state,
                 msg.header.clone(),
             )
             .map_err(|e| {
@@ -304,8 +302,8 @@ where
                     client_id, e,
                 ))
             })?;
-        if new_client_state != client_state
-            || new_consensus_state != consensus_state
+        if updated_state.client_state != client_state
+            || updated_state.consensus_state != consensus_state
         {
             return Err(Error::InvalidClient(
                 "The updated client state or consensus state is unexpected"
@@ -321,7 +319,7 @@ where
     fn verify_upgrade_client(
         &self,
         client_id: &ClientId,
-        msg: MsgUpgradeAnyClient,
+        msg: MsgUpgradeClient,
     ) -> Result<()> {
         if msg.client_id != *client_id {
             return Err(Error::InvalidClient(format!(
@@ -348,22 +346,14 @@ where
             })?;
 
         // verify the given states
-        let client_type = self.client_type(client_id).map_err(|_| {
-            Error::InvalidClient(format!(
-                "The client type doesn't exist: ID {}",
-                client_id
-            ))
-        })?;
-        let client = AnyClient::from_client_type(client_type);
-        match client.verify_upgrade_and_update_state(
-            &msg.client_state,
-            &msg.consensus_state,
+        match client_state_post.verify_upgrade_and_update_state(
+            msg.consensus_state.clone(),
             msg.proof_upgrade_client.clone(),
             msg.proof_upgrade_consensus_state.clone(),
         ) {
-            Ok((new_client_state, new_consensus_state)) => {
-                if new_client_state != client_state_post
-                    || new_consensus_state != consensus_state_post
+            Ok(updated_state) => {
+                if updated_state.client_state != client_state_post
+                    || updated_state.consensus_state != consensus_state_post
                 {
                     return Err(Error::InvalidClient(
                         "The updated client state or consensus state is \
@@ -382,11 +372,20 @@ where
             .map_err(|e| Error::IbcEvent(e.to_string()))
     }
 
-    fn client_state_pre(&self, client_id: &ClientId) -> Result<AnyClientState> {
+    fn client_state_pre(
+        &self,
+        client_id: &ClientId,
+    ) -> Result<Box<dyn ClientState>> {
         let key = client_state_key(client_id);
         match self.ctx.read_bytes_pre(&key) {
             Ok(Some(value)) => {
-                AnyClientState::decode_vec(&value).map_err(|e| {
+                let any = Any::decode(&value[..]).map_err(|e| {
+                    Error::InvalidClient(format!(
+                        "Decoding the client state failed: ID {}, {}",
+                        client_id, e
+                    ))
+                })?;
+                decode_client_state(any).map_err(|e| {
                     Error::InvalidClient(format!(
                         "Decoding the client state failed: ID {}, {}",
                         client_id, e
@@ -420,8 +419,7 @@ where
             Ok(Some(value)) => {
                 let type_str = std::str::from_utf8(&value)
                     .map_err(|_| Ics02Error::implementation_specific())?;
-                ClientType::from_str(type_str)
-                    .map_err(|_| Ics02Error::implementation_specific())
+                Ok(ClientType::new(type_str.to_string()))
             }
             Ok(None) => Err(Ics02Error::client_not_found(client_id.clone())),
             Err(_) => Err(Ics02Error::implementation_specific()),
@@ -431,47 +429,44 @@ where
     fn client_state(
         &self,
         client_id: &ClientId,
-    ) -> Ics02Result<AnyClientState> {
+    ) -> Ics02Result<Box<dyn ClientState>> {
         let key = client_state_key(client_id);
         match self.ctx.read_bytes_post(&key) {
-            Ok(Some(value)) => AnyClientState::decode_vec(&value)
-                .map_err(|_| Ics02Error::implementation_specific()),
+            Ok(Some(value)) => {
+                let any = Any::decode(&value[..])
+                    .map_err(|_| Ics02Error::implementation_specific())?;
+                self.decode_client_state(any)
+            }
             Ok(None) => Err(Ics02Error::client_not_found(client_id.clone())),
             Err(_) => Err(Ics02Error::implementation_specific()),
         }
+    }
+
+    fn decode_client_state(
+        &self,
+        client_state: Any,
+    ) -> Ics02Result<Box<dyn ClientState>> {
+        decode_client_state(client_state)
+            .map_err(|_| Ics02Error::implementation_specific())
     }
 
     fn consensus_state(
         &self,
         client_id: &ClientId,
         height: Height,
-    ) -> Ics02Result<AnyConsensusState> {
+    ) -> Ics02Result<Box<dyn ConsensusState>> {
         let key = consensus_state_key(client_id, height);
         match self.ctx.read_bytes_post(&key) {
-            Ok(Some(value)) => AnyConsensusState::decode_vec(&value)
-                .map_err(|_| Ics02Error::implementation_specific()),
+            Ok(Some(value)) => {
+                let any = Any::decode(&value[..])
+                    .map_err(|_| Ics02Error::implementation_specific())?;
+                decode_consensus_state(any)
+                    .map_err(|_| Ics02Error::implementation_specific())
+            }
             Ok(None) => Err(Ics02Error::consensus_state_not_found(
                 client_id.clone(),
                 height,
             )),
-            Err(_) => Err(Ics02Error::implementation_specific()),
-        }
-    }
-
-    // Reimplement to avoid reading the posterior state
-    fn maybe_consensus_state(
-        &self,
-        client_id: &ClientId,
-        height: Height,
-    ) -> Ics02Result<Option<AnyConsensusState>> {
-        let key = consensus_state_key(client_id, height);
-        match self.ctx.read_bytes_pre(&key) {
-            Ok(Some(value)) => {
-                let cs = AnyConsensusState::decode_vec(&value)
-                    .map_err(|_| Ics02Error::implementation_specific())?;
-                Ok(Some(cs))
-            }
-            Ok(None) => Ok(None),
             Err(_) => Err(Ics02Error::implementation_specific()),
         }
     }
@@ -481,7 +476,7 @@ where
         &self,
         client_id: &ClientId,
         height: Height,
-    ) -> Ics02Result<Option<AnyConsensusState>> {
+    ) -> Ics02Result<Option<Box<dyn ConsensusState>>> {
         let prefix = consensus_state_prefix(client_id);
         let mut iter = self
             .ctx
@@ -509,7 +504,9 @@ where
         }
         match lowest_height_value {
             Some((_, value)) => {
-                let cs = AnyConsensusState::decode_vec(&value)
+                let any = Any::decode(&value[..])
+                    .map_err(|_| Ics02Error::implementation_specific())?;
+                let cs = decode_consensus_state(any)
                     .map_err(|_| Ics02Error::implementation_specific())?;
                 Ok(Some(cs))
             }
@@ -522,7 +519,7 @@ where
         &self,
         client_id: &ClientId,
         height: Height,
-    ) -> Ics02Result<Option<AnyConsensusState>> {
+    ) -> Ics02Result<Option<Box<dyn ConsensusState>>> {
         let prefix = consensus_state_prefix(client_id);
         let mut iter = self
             .ctx
@@ -550,7 +547,9 @@ where
         }
         match highest_height_value {
             Some((_, value)) => {
-                let cs = AnyConsensusState::decode_vec(&value)
+                let any = Any::decode(&value[..])
+                    .map_err(|_| Ics02Error::implementation_specific())?;
+                let cs = decode_consensus_state(any)
                     .map_err(|_| Ics02Error::implementation_specific())?;
                 Ok(Some(cs))
             }
@@ -561,17 +560,17 @@ where
     fn host_height(&self) -> Height {
         let height = self.ctx.storage.get_block_height().0.0;
         // the revision number is always 0
-        Height::new(0, height)
+        Height::new(0, height).expect("Making a height shouldn't fail")
     }
 
     fn host_consensus_state(
         &self,
         height: Height,
-    ) -> Ics02Result<AnyConsensusState> {
+    ) -> Ics02Result<Box<dyn ConsensusState>> {
         let (header, gas) = self
             .ctx
             .storage
-            .get_block_header(Some(BlockHeight(height.revision_height)))
+            .get_block_header(Some(BlockHeight(height.revision_height())))
             .map_err(|_| Ics02Error::implementation_specific())?;
         self.ctx
             .gas_meter
@@ -584,19 +583,22 @@ where
                 timestamp: h.time.try_into().unwrap(),
                 next_validators_hash: h.next_validators_hash.into(),
             }
-            .wrap_any()),
+            .into_box()),
             None => Err(Ics02Error::missing_raw_header()),
         }
     }
 
-    fn pending_host_consensus_state(&self) -> Ics02Result<AnyConsensusState> {
+    fn pending_host_consensus_state(
+        &self,
+    ) -> Ics02Result<Box<dyn ConsensusState>> {
         let (block_height, gas) = self.ctx.storage.get_block_height();
         self.ctx
             .gas_meter
             .borrow_mut()
             .add(gas)
             .map_err(|_| Ics02Error::implementation_specific())?;
-        let height = Height::new(0, block_height.0);
+        let height = Height::new(0, block_height.0)
+            .expect("Making a height shouldn't fail");
         ClientReader::host_consensus_state(self, height)
     }
 
@@ -605,6 +607,64 @@ where
         self.read_counter(&key)
             .map_err(|_| Ics02Error::implementation_specific())
     }
+}
+
+use crate::ibc::clients::ics07_tendermint::host_helpers::ValidateSelfClientContext;
+use crate::ibc::core::ics23_commitment::specs::ProofSpecs;
+use crate::ibc::core::ics24_host::identifier::ChainId;
+/// To validate ClientState of tendermint
+impl<'a, DB, H, CA> ValidateSelfClientContext for Ibc<'a, DB, H, CA>
+where
+    DB: 'static + storage::DB + for<'iter> storage::DBIter<'iter>,
+    H: 'static + StorageHasher,
+    CA: 'static + WasmCacheAccess,
+{
+    fn chain_id(&self) -> &ChainId {
+        &self.chain_id
+    }
+
+    fn host_current_height(&self) -> Height {
+        ClientReader::host_height(self)
+    }
+
+    fn proof_specs(&self) -> &ProofSpecs {
+        use namada_core::ledger::storage::ics23_specs::ibc_proof_specs;
+
+        use crate::ledger::storage::traits::Sha256Hasher;
+
+        &ibc_proof_specs::<Sha256Hasher>().into()
+    }
+
+    fn unbonding_period(&self) -> core::time::Duration {
+        // TODO: fix the unbonding time for Namada
+        core::time::Duration::new(1814400, 0)
+    }
+
+    fn upgrade_path(&self) -> &[String] {
+        &self.upgrade_path
+    }
+}
+
+/// Decode ConsensusState from Any
+pub fn decode_consensus_state(
+    any_consensus_state: Any,
+) -> Result<Box<dyn ConsensusState>> {
+    if let Ok(consensus_state) =
+        TmConsensusState::try_from(any_consensus_state.clone())
+    {
+        return Ok(consensus_state.into_box());
+    }
+
+    #[cfg(any(feature = "ibc-mocks-abcipp", feature = "ibc-mocks"))]
+    if let Ok(consensus_state) =
+        MockConsensusState::try_from(any_consensus_state)
+    {
+        return Ok(consensus_state.into_box());
+    }
+
+    Err(Error::InvalidClient(
+        "Unknown consensus state was given".to_string(),
+    ))
 }
 
 impl From<IbcDataError> for Error {

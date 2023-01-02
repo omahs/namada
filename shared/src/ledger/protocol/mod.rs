@@ -310,7 +310,7 @@ where
                             result
                         }
                         InternalAddress::Ibc => {
-                            let ibc = Ibc { ctx };
+                            let ibc = Ibc::new(ctx, &storage.chain_id);
                             let result = ibc
                                 .validate_tx(tx_data, &keys_changed, &verifiers)
                                 .map_err(Error::IbcNativeVpError);

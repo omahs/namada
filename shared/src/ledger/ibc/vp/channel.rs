@@ -240,8 +240,10 @@ where
         let prev_channel = self.channel_end_pre(port_channel_id)?;
 
         let ibc_msg = IbcMessage::decode(tx_data)?;
-        let event = match ibc_msg.0 {
-            Ics26Envelope::Ics4ChannelMsg(ChannelMsg::ChannelOpenAck(msg)) => {
+        let event = match ibc_msg {
+            IbcMessage::Ics26(Ics26Envelope::Ics4ChannelMsg(
+                ChannelMsg::ChannelOpenAck(msg),
+            )) => {
                 if !channel.state().is_open()
                     || !prev_channel.state_matches(&State::Init)
                 {
@@ -252,17 +254,13 @@ where
                     )));
                 }
                 self.verify_channel_ack_proof(port_channel_id, channel, &msg)?;
-                Some(make_open_ack_channel_event(&msg, channel).map_err(
-                    |_| {
-                        Error::InvalidChannel(format!(
-                            "No connection for the channel: Port/Channel {}",
-                            port_channel_id
-                        ))
-                    },
-                )?)
+                Some(
+                    make_open_ack_channel_event(&msg, channel)
+                        .map_err(|e| Error::IbcEvent(e.to_string()))?,
+                )
             }
-            Ics26Envelope::Ics4ChannelMsg(ChannelMsg::ChannelOpenConfirm(
-                msg,
+            IbcMessage::Ics26(Ics26Envelope::Ics4ChannelMsg(
+                ChannelMsg::ChannelOpenConfirm(msg),
             )) => {
                 if !channel.state().is_open()
                     || !prev_channel.state_matches(&State::TryOpen)
@@ -278,16 +276,14 @@ where
                     channel,
                     &msg,
                 )?;
-                Some(make_open_confirm_channel_event(&msg, channel).map_err(
-                    |_| {
-                        Error::InvalidChannel(format!(
-                            "No connection for the channel: Port/Channel {}",
-                            port_channel_id
-                        ))
-                    },
-                )?)
+                Some(
+                    make_open_confirm_channel_event(&msg, channel)
+                        .map_err(|e| Error::IbcEvent(e.to_string()))?,
+                )
             }
-            Ics26Envelope::Ics4PacketMsg(PacketMsg::TimeoutPacket(msg)) => {
+            IbcMessage::Ics26(Ics26Envelope::Ics4PacketMsg(
+                PacketMsg::TimeoutPacket(msg),
+            )) => {
                 if !channel.state_matches(&State::Closed)
                     || !prev_channel.state().is_open()
                 {
@@ -305,8 +301,8 @@ where
                 self.validate_commitment_absence(commitment_key)?;
                 Some(make_timeout_event(msg.packet, channel.ordering()))
             }
-            Ics26Envelope::Ics4PacketMsg(PacketMsg::TimeoutOnClosePacket(
-                msg,
+            IbcMessage::Ics26(Ics26Envelope::Ics4PacketMsg(
+                PacketMsg::TimeoutOnClosePacket(msg),
             )) => {
                 let commitment_key = (
                     msg.packet.source_port,
@@ -316,32 +312,24 @@ where
                 self.validate_commitment_absence(commitment_key)?;
                 None
             }
-            Ics26Envelope::Ics4ChannelMsg(ChannelMsg::ChannelCloseInit(
-                msg,
-            )) => Some(make_close_init_channel_event(&msg, channel).map_err(
-                |_| {
-                    Error::InvalidChannel(format!(
-                        "No connection for the channel: Port/Channel {}",
-                        port_channel_id
-                    ))
-                },
-            )?),
-            Ics26Envelope::Ics4ChannelMsg(ChannelMsg::ChannelCloseConfirm(
-                msg,
+            IbcMessage::Ics26(Ics26Envelope::Ics4ChannelMsg(
+                ChannelMsg::ChannelCloseInit(msg),
+            )) => Some(
+                make_close_init_channel_event(&msg, channel)
+                    .map_err(|e| Error::IbcEvent(e.to_string()))?,
+            ),
+            IbcMessage::Ics26(Ics26Envelope::Ics4ChannelMsg(
+                ChannelMsg::ChannelCloseConfirm(msg),
             )) => {
                 self.verify_channel_close_proof(
                     port_channel_id,
                     channel,
                     &msg,
                 )?;
-                Some(make_close_confirm_channel_event(&msg, channel).map_err(
-                    |_| {
-                        Error::InvalidChannel(format!(
-                            "No connection for the channel: Port/Channel {}",
-                            port_channel_id
-                        ))
-                    },
-                )?)
+                Some(
+                    make_close_confirm_channel_event(&msg, channel)
+                        .map_err(|e| Error::IbcEvent(e.to_string()))?,
+                )
             }
             _ => {
                 return Err(Error::InvalidStateChange(format!(
@@ -558,6 +546,27 @@ where
         ) {
             Ok(_) => Ok(()),
             Err(e) => Err(Error::ProofVerificationFailure(e)),
+        }
+    }
+
+    pub(super) fn authenticated_capability(
+        &self,
+        port_id: &PortId,
+    ) -> Result<()> {
+        let cap = self
+            .get_capability_by_port(port_id)
+            .map_err(|e| Error::InvalidPort(e.to_string()))?;
+        let bound_port_id = self
+            .get_port_by_capability(cap)
+            .map_err(|e| Error::InvalidPort(e.to_string()))?;
+
+        if bound_port_id == *port_id {
+            Ok(())
+        } else {
+            Err(Error::InvalidPort(format!(
+                "The port wasn't bound: Port {}",
+                port_id
+            )))
         }
     }
 

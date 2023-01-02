@@ -8,7 +8,6 @@ use super::super::storage::{
     port_id, port_key, Error as IbcStorageError,
 };
 use super::{Ibc, StateChange};
-use crate::ibc::core::ics04_channel::context::ChannelReader;
 use crate::ibc::core::ics05_port::context::PortReader;
 use crate::ibc::core::ics05_port::error::Error as Ics05Error;
 use crate::ibc::core::ics24_host::identifier::PortId;
@@ -26,7 +25,7 @@ pub enum Error {
     #[error("Port error: {0}")]
     InvalidPort(String),
     #[error("Capability error: {0}")]
-    NoCapability(String),
+    Capability(String),
     #[error("IBC storage error: {0}")]
     IbcStorage(IbcStorageError),
 }
@@ -84,18 +83,17 @@ where
                 .map_err(|e| Error::InvalidStateChange(e.to_string()))?
             {
                 StateChange::Created => {
-                    let cap = capability(key)?;
-                    let port_id = self.get_port_by_capability(&cap)?;
-                    match self.lookup_module_by_port(&port_id) {
-                        Ok((_, c)) if c == cap.into() => Ok(()),
-                        Ok(_) => Err(Error::InvalidPort(format!(
-                            "The port is invalid: ID {}",
-                            port_id
-                        ))),
-                        Err(_) => Err(Error::NoCapability(format!(
+                    let expected_cap = capability(key)?;
+                    let port_id = self.get_port_by_capability(expected_cap)?;
+                    // check the capability has been mapped to the port
+                    let cap = self.get_capability_by_port(&port_id)?;
+                    if cap == expected_cap {
+                        Ok(())
+                    } else {
+                        Err(Error::Capability(format!(
                             "The capability is not mapped: Port {}",
                             port_id
-                        ))),
+                        )))
                     }
                 }
                 _ => Err(Error::InvalidStateChange(format!(
@@ -109,7 +107,7 @@ where
     fn capability_index_pre(&self) -> Result<u64> {
         let key = capability_index_key();
         self.read_counter_pre(&key)
-            .map_err(|e| Error::NoCapability(e.to_string()))
+            .map_err(|e| Error::Capability(e.to_string()))
     }
 
     fn capability_index(&self) -> Result<u64> {
@@ -122,7 +120,10 @@ where
         })
     }
 
-    fn get_port_by_capability(&self, cap_index: u64) -> Result<PortId> {
+    pub(super) fn get_port_by_capability(
+        &self,
+        cap_index: u64,
+    ) -> Result<PortId> {
         let key = capability_key(cap_index);
         match self.ctx.read_bytes_post(&key) {
             Ok(Some(value)) => {
@@ -143,7 +144,33 @@ where
                 "The capability is not mapped to any port".to_owned(),
             )),
             Err(e) => Err(Error::InvalidPort(format!(
-                "Reading the port failed {}",
+                "Reading the port failed: {}",
+                e
+            ))),
+        }
+    }
+
+    pub(super) fn get_capability_by_port(
+        &self,
+        port_id: &PortId,
+    ) -> Result<u64> {
+        let key = port_key(port_id);
+        match self.ctx.read_bytes_post(&key) {
+            Ok(Some(value)) => {
+                let index: [u8; 8] = value.try_into().map_err(|_| {
+                    Error::Capability(format!(
+                        "Decoding the capability index failed: Port {}",
+                        port_id
+                    ))
+                })?;
+                Ok(u64::from_be_bytes(index))
+            }
+            Ok(None) => Err(Error::Capability(format!(
+                "No capability for the port: Port {}",
+                port_id
+            ))),
+            Err(e) => Err(Error::Capability(format!(
+                "Reading the capability failed: {}",
                 e
             ))),
         }
@@ -163,7 +190,8 @@ where
                 let index: [u8; 8] = value
                     .try_into()
                     .map_err(|_| Ics05Error::implementation_specific())?;
-                let index = u64::from_be_bytes(index);
+                let _index = u64::from_be_bytes(index);
+                // TODO: Routing for other apps
                 let module_id = ModuleId::new(MODULE_ID.into())
                     .expect("Creating the module ID shouldn't fail");
                 Ok(module_id)
@@ -171,14 +199,6 @@ where
             Ok(None) => Err(Ics05Error::unknown_port(port_id.clone())),
             Err(_) => Err(Ics05Error::implementation_specific()),
         }
-    }
-}
-
-fn get_port_id(name: &CapabilityName) -> Ics05Result<PortId> {
-    match name.to_string().strip_prefix("ports/") {
-        Some(s) => PortId::from_str(s)
-            .map_err(|_| Ics05Error::implementation_specific()),
-        None => Err(Ics05Error::implementation_specific()),
     }
 }
 

@@ -12,26 +12,32 @@ use super::super::storage::{
     is_connection_counter_key, Error as IbcStorageError,
 };
 use super::{Ibc, StateChange};
-use crate::ibc::core::ics02_client::client_consensus::AnyConsensusState;
-use crate::ibc::core::ics02_client::client_state::AnyClientState;
+use crate::ibc::clients::ics07_tendermint::client_state::ClientState as TmClientState;
+use crate::ibc::core::ics02_client::client_state::ClientState;
+use crate::ibc::core::ics02_client::consensus_state::ConsensusState;
 use crate::ibc::core::ics02_client::context::ClientReader;
+use crate::ibc::core::ics02_client::error::Error as Ics02Error;
 use crate::ibc::core::ics02_client::height::Height;
 use crate::ibc::core::ics03_connection::connection::{
     ConnectionEnd, Counterparty, State,
 };
 use crate::ibc::core::ics03_connection::context::ConnectionReader;
 use crate::ibc::core::ics03_connection::error::Error as Ics03Error;
-use crate::ibc::core::ics03_connection::handler::verify::verify_proofs;
 use crate::ibc::core::ics03_connection::msgs::conn_open_ack::MsgConnectionOpenAck;
 use crate::ibc::core::ics03_connection::msgs::conn_open_confirm::MsgConnectionOpenConfirm;
 use crate::ibc::core::ics03_connection::msgs::conn_open_try::MsgConnectionOpenTry;
-use crate::ibc::core::ics23_commitment::commitment::CommitmentPrefix;
+use crate::ibc::core::ics23_commitment::commitment::{
+    CommitmentPrefix, CommitmentProofBytes,
+};
 use crate::ibc::core::ics24_host::identifier::{ClientId, ConnectionId};
+#[cfg(any(feature = "ibc-mocks-abcipp", feature = "ibc-mocks"))]
+use crate::ibc::mock::client_state::MockClientState;
+use crate::ibc_proto::google::protobuf::Any;
+use crate::ibc_proto::protobuf::Protobuf;
 use crate::ledger::native_vp::VpEnv;
 use crate::ledger::storage::{self, StorageHasher};
-use crate::tendermint_proto::Protobuf;
 use crate::types::ibc::data::{Error as IbcDataError, IbcMessage};
-use crate::types::storage::{BlockHeight, Epoch, Key};
+use crate::types::storage::{BlockHeight, Key};
 use crate::vm::WasmCacheAccess;
 
 #[allow(missing_docs)]
@@ -46,7 +52,7 @@ pub enum Error {
     #[error("Version error: {0}")]
     InvalidVersion(String),
     #[error("Proof verification error: {0}")]
-    ProofVerificationFailure(Ics03Error),
+    ProofVerificationFailure(Ics02Error),
     #[error("Decoding TX data error: {0}")]
     DecodingTxData(std::io::Error),
     #[error("IBC data error: {0}")]
@@ -149,7 +155,8 @@ where
                 let ibc_msg = IbcMessage::decode(tx_data)?;
                 let msg = ibc_msg.msg_connection_open_try()?;
                 self.verify_connection_try_proof(conn, &msg)?;
-                let event = make_open_try_connection_event(conn_id, &msg);
+                let event = make_open_try_connection_event(conn_id, &msg)
+                    .map_err(|e| Error::IbcEvent(e.to_string()))?;
                 self.check_emitted_event(event)
                     .map_err(|e| Error::IbcEvent(e.to_string()))
             }
@@ -174,7 +181,11 @@ where
                         let ibc_msg = IbcMessage::decode(tx_data)?;
                         let msg = ibc_msg.msg_connection_open_ack()?;
                         self.verify_connection_ack_proof(conn_id, conn, &msg)?;
-                        let event = make_open_ack_connection_event(&msg);
+                        let event = make_open_ack_connection_event(
+                            conn.client_id(),
+                            conn.counterparty().client_id(),
+                            &msg,
+                        );
                         self.check_emitted_event(event)
                             .map_err(|e| Error::IbcEvent(e.to_string()))
                     }
@@ -184,7 +195,12 @@ where
                         self.verify_connection_confirm_proof(
                             conn_id, conn, &msg,
                         )?;
-                        let event = make_open_confirm_connection_event(&msg);
+                        let event = make_open_confirm_connection_event(
+                            conn.client_id(),
+                            conn.counterparty(),
+                            &msg,
+                        )
+                        .map_err(|e| Error::IbcEvent(e.to_string()))?;
                         self.check_emitted_event(event)
                             .map_err(|e| Error::IbcEvent(e.to_string()))
                     }
@@ -217,17 +233,12 @@ where
             conn.delay_period(),
         );
 
-        match verify_proofs(
-            self,
-            msg.client_state.clone(),
-            msg.proofs.height(),
+        self.verify_connection_proofs(
             &conn,
+            msg.proofs_height_on_a,
             &expected_conn,
-            &msg.proofs,
-        ) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(Error::ProofVerificationFailure(e)),
-        }
+            &msg.proof_conn_end_on_a,
+        )
     }
 
     fn verify_connection_ack_proof(
@@ -246,7 +257,7 @@ where
         // counterpart connection ID check
         match conn.counterparty().connection_id() {
             Some(counterpart_conn_id) => {
-                if *counterpart_conn_id != msg.counterparty_connection_id {
+                if *counterpart_conn_id != msg.conn_id_on_b {
                     return Err(Error::InvalidConnection(format!(
                         "The counterpart connection ID mismatched: ID {}",
                         counterpart_conn_id
@@ -275,17 +286,12 @@ where
             conn.delay_period(),
         );
 
-        match verify_proofs(
-            self,
-            msg.client_state.clone(),
-            msg.proofs.height(),
+        self.verify_connection_proofs(
             &conn,
+            msg.proofs_height_on_b,
             &expected_conn,
-            &msg.proofs,
-        ) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(Error::ProofVerificationFailure(e)),
-        }
+            &msg.proof_conn_end_on_b,
+        )
     }
 
     fn verify_connection_confirm_proof(
@@ -307,17 +313,12 @@ where
             conn.delay_period(),
         );
 
-        match verify_proofs(
-            self,
-            None,
-            msg.proofs.height(),
+        self.verify_connection_proofs(
             &conn,
+            msg.proof_height_on_a,
             &expected_conn,
-            &msg.proofs,
-        ) {
-            Ok(_) => Ok(()),
-            Err(e) => Err(Error::ProofVerificationFailure(e)),
-        }
+            &msg.proof_conn_end_on_a,
+        )
     }
 
     fn connection_end_pre(
@@ -344,6 +345,38 @@ where
         self.read_counter_pre(&key)
             .map_err(|e| Error::InvalidConnection(e.to_string()))
     }
+
+    fn verify_connection_proofs(
+        &self,
+        conn: &ConnectionEnd,
+        height: Height,
+        expected_counterparty_conn: &ConnectionEnd,
+        proof: &CommitmentProofBytes,
+    ) -> Result<()> {
+        let client_id = conn.client_id();
+        let client_state = ConnectionReader::client_state(self, client_id)
+            .map_err(|e| Error::InvalidClient(e.to_string()))?;
+        let consensus_state = self
+            .consensus_state(client_id, height)
+            .map_err(|e| Error::InvalidClient(e.to_string()))?;
+        let counterpart_conn_id =
+            conn.counterparty().connection_id().ok_or_else(|| {
+                Error::InvalidConnection(format!(
+                    "Counterparty connection doesn't exist: client ID {}",
+                    client_id
+                ))
+            })?;
+        client_state
+            .verify_connection_state(
+                height,
+                conn.counterparty().prefix(),
+                proof,
+                consensus_state.root(),
+                counterpart_conn_id,
+                expected_counterparty_conn,
+            )
+            .map_err(Error::ProofVerificationFailure)
+    }
 }
 
 impl<'a, DB, H, CA> ConnectionReader for Ibc<'a, DB, H, CA>
@@ -368,8 +401,16 @@ where
     fn client_state(
         &self,
         client_id: &ClientId,
-    ) -> Ics03Result<AnyClientState> {
+    ) -> Ics03Result<Box<dyn ClientState>> {
         ClientReader::client_state(self, client_id)
+            .map_err(Ics03Error::ics02_client)
+    }
+
+    fn decode_client_state(
+        &self,
+        client_state: Any,
+    ) -> Ics03Result<Box<dyn ClientState>> {
+        ClientReader::decode_client_state(self, client_state)
             .map_err(Ics03Error::ics02_client)
     }
 
@@ -378,9 +419,8 @@ where
     }
 
     fn host_oldest_height(&self) -> Height {
-        let epoch = Epoch::default().0;
         let height = BlockHeight::default().0;
-        Height::new(epoch, height)
+        Height::new(0, height).expect("Making a height shouldn't fail")
     }
 
     fn commitment_prefix(&self) -> CommitmentPrefix {
@@ -391,7 +431,7 @@ where
         &self,
         client_id: &ClientId,
         height: Height,
-    ) -> Ics03Result<AnyConsensusState> {
+    ) -> Ics03Result<Box<dyn ConsensusState>> {
         self.consensus_state(client_id, height)
             .map_err(Ics03Error::ics02_client)
     }
@@ -399,7 +439,7 @@ where
     fn host_consensus_state(
         &self,
         height: Height,
-    ) -> Ics03Result<AnyConsensusState> {
+    ) -> Ics03Result<Box<dyn ConsensusState>> {
         ClientReader::host_consensus_state(self, height)
             .map_err(Ics03Error::ics02_client)
     }
@@ -408,6 +448,24 @@ where
         let key = connection_counter_key();
         self.read_counter(&key)
             .map_err(|_| Ics03Error::implementation_specific())
+    }
+
+    fn validate_self_client(
+        &self,
+        counterparty_client_state: Any,
+    ) -> Ics03Result<()> {
+        if TmClientState::try_from(counterparty_client_state.clone()).is_ok() {
+            return self.validate_self_client(counterparty_client_state);
+        }
+
+        #[cfg(any(feature = "ibc-mocks-abcipp", feature = "ibc-mocks"))]
+        if MockClientState::try_from(counterparty_client_state).is_ok() {
+            return Ok(());
+        }
+
+        Err(Ics03Error::invalid_client_state(
+            "Unknown consensus state was given".to_string(),
+        ))
     }
 }
 
