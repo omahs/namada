@@ -23,13 +23,13 @@ mod tests {
     use itertools::Itertools;
     use namada::core::ledger::ibc::actions::IbcActions;
     use namada::ibc::tx_msg::Msg;
+    use namada::ibc_proto::protobuf::Protobuf;
     use namada::ledger::ibc::storage as ibc_storage;
     use namada::ledger::ibc::vp::{
         get_dummy_header as tm_dummy_header, Error as IbcError,
     };
     use namada::ledger::tx_env::TxEnv;
     use namada::proto::{SignedTxData, Tx};
-    use namada::tendermint_proto::Protobuf;
     use namada::types::key::*;
     use namada::types::storage::{self, BlockHash, BlockHeight, Key, KeySeg};
     use namada::types::time::DateTimeUtc;
@@ -573,14 +573,18 @@ mod tests {
         let counter = tx::ctx()
             .get_and_inc_counter(&counter_key)
             .expect("getting the counter failed");
-        let client_id = ibc::client_id(msg.client_state.client_type(), counter)
-            .expect("invalid client ID");
+        let client_state =
+            ibc::actions::decode_client_state(msg.client_state.clone())
+                .expect("invalid client state");
+        let client_id =
+            ibc::actions::client_id(client_state.client_type(), counter)
+                .expect("invalid client ID");
         // only insert a client type
         let client_type_key = ibc::client_type_key(&client_id);
         tx::ctx()
             .write(
                 &client_type_key,
-                msg.client_state.client_type().as_str().as_bytes(),
+                client_state.client_type().as_str().as_bytes(),
             )
             .unwrap();
 
@@ -643,23 +647,20 @@ mod tests {
         // update the client with the same state
         let old_data = ibc::msg_create_client();
         let same_client_state = old_data.client_state.clone();
-        let height = same_client_state.latest_height();
+        let height =
+            ibc::actions::decode_client_state(same_client_state.clone())
+                .expect("invalid client state")
+                .latest_height();
         let same_consensus_state = old_data.consensus_state;
         let client_state_key = ibc::client_state_key(&client_id);
         tx::ctx()
-            .write_bytes(
-                &client_state_key,
-                same_client_state.encode_vec().unwrap(),
-            )
+            .write_bytes(&client_state_key, same_client_state.encode_to_vec())
             .unwrap();
         let consensus_state_key = ibc::consensus_state_key(&client_id, height);
         tx::ctx()
-            .write(
-                &consensus_state_key,
-                same_consensus_state.encode_vec().unwrap(),
-            )
+            .write(&consensus_state_key, same_consensus_state.encode_to_vec())
             .unwrap();
-        let event = ibc::make_update_client_event(&client_id, &msg);
+        let event = ibc::actions::make_update_client_event(&client_id, &msg);
         TxEnv::emit_ibc_event(tx::ctx(), &event.try_into().unwrap()).unwrap();
 
         // Check should fail due to the invalid updating
@@ -756,14 +757,15 @@ mod tests {
             .get_and_inc_counter(&counter_key)
             .expect("getting the counter failed");
         // insert a new opened connection
-        let conn_id = ibc::connection_id(counter);
+        let conn_id = ibc::actions::connection_id(counter);
         let conn_key = ibc::connection_key(&conn_id);
-        let mut connection = ibc::init_connection(&msg);
-        ibc::open_connection(&mut connection);
+        let mut connection = ibc::actions::init_connection(&msg);
+        ibc::actions::open_connection(&mut connection);
         tx::ctx()
             .write_bytes(&conn_key, connection.encode_vec().unwrap())
             .unwrap();
-        let event = ibc::make_open_init_connection_event(&conn_id, &msg);
+        let event =
+            ibc::actions::make_open_init_connection_event(&conn_id, &msg);
         TxEnv::emit_ibc_event(tx::ctx(), &event.try_into().unwrap()).unwrap();
 
         // Check should fail due to directly opening a connection
@@ -866,7 +868,7 @@ mod tests {
 
         // Start the next transaction for ConnectionOpenConfirm
         tx_host_env::set(env);
-        let conn_id = ibc::connection_id(0);
+        let conn_id = ibc::actions::connection_id(0);
         let msg = ibc::msg_connection_open_confirm(conn_id);
         let mut tx_data = vec![];
         msg.to_any().encode(&mut tx_data).expect("encoding failed");
@@ -904,7 +906,8 @@ mod tests {
         });
 
         // Start an invalid transaction
-        let port_id = ibc::port_id("test_port").expect("invalid port ID");
+        let port_id =
+            ibc::actions::port_id("test_port").expect("invalid port ID");
         let msg = ibc::msg_channel_open_init(port_id.clone(), conn_id.clone());
         let mut tx_data = vec![];
         msg.clone()
@@ -924,13 +927,15 @@ mod tests {
             .get_and_inc_counter(&counter_key)
             .expect("getting the counter failed");
         // channel
-        let channel_id = ibc::channel_id(counter);
-        let port_channel_id = ibc::port_channel_id(port_id, channel_id);
+        let channel_id = ibc::actions::channel_id(counter);
+        let port_channel_id =
+            ibc::actions::port_channel_id(port_id, channel_id);
         let channel_key = ibc::channel_key(&port_channel_id);
         tx::ctx()
-            .write_bytes(&channel_key, msg.channel.encode_vec().unwrap())
+            .write_bytes(&channel_key, msg.chan_end_on_a.encode_vec().unwrap())
             .unwrap();
-        let event = ibc::make_open_init_channel_event(&channel_id, &msg);
+        let event =
+            ibc::actions::make_open_init_channel_event(&channel_id, &msg);
         TxEnv::emit_ibc_event(tx::ctx(), &event.try_into().unwrap()).unwrap();
 
         // Check should fail due to no port binding
@@ -945,7 +950,8 @@ mod tests {
 
         // Start an invalid transaction
         tx_host_env::set(env);
-        let port_id = ibc::port_id("test_port").expect("invalid port ID");
+        let port_id =
+            ibc::actions::port_id("test_port").expect("invalid port ID");
         let msg = ibc::msg_channel_open_init(port_id.clone(), conn_id.clone());
         let mut tx_data = vec![];
         msg.clone()
@@ -968,15 +974,17 @@ mod tests {
             .get_and_inc_counter(&counter_key)
             .expect("getting the counter failed");
         // insert a opened channel
-        let channel_id = ibc::channel_id(counter);
-        let port_channel_id = ibc::port_channel_id(port_id, channel_id);
+        let channel_id = ibc::actions::channel_id(counter);
+        let port_channel_id =
+            ibc::actions::port_channel_id(port_id, channel_id);
         let channel_key = ibc::channel_key(&port_channel_id);
-        let mut channel = msg.channel.clone();
-        ibc::open_channel(&mut channel);
+        let mut channel = msg.chan_end_on_a.clone();
+        ibc::actions::open_channel(&mut channel);
         tx::ctx()
             .write_bytes(&channel_key, channel.encode_vec().unwrap())
             .unwrap();
-        let event = ibc::make_open_init_channel_event(&channel_id, &msg);
+        let event =
+            ibc::actions::make_open_init_channel_event(&channel_id, &msg);
         TxEnv::emit_ibc_event(tx::ctx(), &event.try_into().unwrap()).unwrap();
 
         // Check should fail due to directly opening a channel
@@ -992,7 +1000,8 @@ mod tests {
 
         // Start a transaction for ChannelOpenInit
         tx_host_env::set(env);
-        let port_id = ibc::port_id("test_port").expect("invalid port ID");
+        let port_id =
+            ibc::actions::port_id("test_port").expect("invalid port ID");
         let msg = ibc::msg_channel_open_init(port_id.clone(), conn_id);
         let mut tx_data = vec![];
         msg.to_any().encode(&mut tx_data).expect("encoding failed");
@@ -1054,7 +1063,8 @@ mod tests {
         });
 
         // Start a transaction for ChannelOpenTry
-        let port_id = ibc::port_id("test_port").expect("invalid port ID");
+        let port_id =
+            ibc::actions::port_id("test_port").expect("invalid port ID");
         let msg = ibc::msg_channel_open_try(port_id.clone(), conn_id);
         let mut tx_data = vec![];
         msg.to_any().encode(&mut tx_data).expect("encoding failed");
@@ -1079,7 +1089,7 @@ mod tests {
 
         // Start the next transaction for ChannelOpenConfirm
         tx_host_env::set(env);
-        let channel_id = ibc::channel_id(0);
+        let channel_id = ibc::actions::channel_id(0);
         let msg = ibc::msg_channel_open_confirm(port_id, channel_id);
         let mut tx_data = vec![];
         msg.to_any().encode(&mut tx_data).expect("encoding failed");
@@ -1243,8 +1253,11 @@ mod tests {
         // Start the next transaction for receiving an ack
         tx_host_env::set(env);
         let counterparty = ibc::dummy_channel_counterparty();
-        let packet =
-            ibc::packet_from_message(&msg, ibc::sequence(1), &counterparty);
+        let packet = ibc::packet_from_message(
+            &msg,
+            ibc::actions::sequence(1),
+            &counterparty,
+        );
         let msg = ibc::msg_packet_ack(packet);
         let mut tx_data = vec![];
         msg.to_any().encode(&mut tx_data).expect("encoding failed");
@@ -1280,7 +1293,9 @@ mod tests {
         writes.extend(channel_writes);
         // the origin-specific token
         let denom = format!("{}/{}/{}", port_id, channel_id, token);
-        let key_prefix = ibc_storage::ibc_token_prefix(denom).unwrap();
+        let coin =
+            ibc::actions::prefixed_coin(denom, "1").expect("invalid coin");
+        let key_prefix = ibc_storage::ibc_token_prefix(&coin).unwrap();
         let key = token::multitoken_balance_key(&key_prefix, &sender);
         let init_bal = Amount::from(1_000_000_000u64);
         writes.insert(key, init_bal.try_to_vec().unwrap());
@@ -1338,7 +1353,9 @@ mod tests {
         writes.extend(channel_writes);
         // the origin-specific token
         let denom = format!("{}/{}/{}", port_id, channel_id, token);
-        let key_prefix = ibc_storage::ibc_token_prefix(denom).unwrap();
+        let coin =
+            ibc::actions::prefixed_coin(denom, "1").expect("invalid coin");
+        let key_prefix = ibc_storage::ibc_token_prefix(&coin).unwrap();
         let key = token::multitoken_balance_key(&key_prefix, &receiver);
         let init_bal = Amount::from(1_000_000_000u64);
         writes.insert(key, init_bal.try_to_vec().unwrap());
@@ -1353,7 +1370,7 @@ mod tests {
         let packet = ibc::received_packet(
             port_id.clone(),
             channel_id,
-            ibc::sequence(1),
+            ibc::actions::sequence(1),
             token.to_string(),
             &receiver,
         );
@@ -1430,7 +1447,7 @@ mod tests {
         let packet = ibc::received_packet(
             port_id,
             channel_id,
-            ibc::sequence(1),
+            ibc::actions::sequence(1),
             token,
             &receiver,
         );
@@ -1510,8 +1527,11 @@ mod tests {
         // Start the next transaction for receiving an ack
         tx_host_env::set(env);
         let counterparty = ibc::dummy_channel_counterparty();
-        let packet =
-            ibc::packet_from_message(&msg, ibc::sequence(1), &counterparty);
+        let packet = ibc::packet_from_message(
+            &msg,
+            ibc::actions::sequence(1),
+            &counterparty,
+        );
         let msg = ibc::msg_packet_ack(packet);
         let mut tx_data = vec![];
         msg.to_any().encode(&mut tx_data).expect("encoding failed");
@@ -1557,7 +1577,7 @@ mod tests {
         let packet = ibc::received_packet(
             port_id,
             channel_id,
-            ibc::sequence(100),
+            ibc::actions::sequence(100),
             token.to_string(),
             &receiver,
         );
@@ -1623,9 +1643,12 @@ mod tests {
 
         // Start a transaction to notify the timeout
         let counterparty = ibc::dummy_channel_counterparty();
-        let packet =
-            ibc::packet_from_message(&msg, ibc::sequence(1), &counterparty);
-        let msg = ibc::msg_timeout(packet.clone(), ibc::sequence(1));
+        let packet = ibc::packet_from_message(
+            &msg,
+            ibc::actions::sequence(1),
+            &counterparty,
+        );
+        let msg = ibc::msg_timeout(packet.clone(), ibc::actions::sequence(1));
         let mut tx_data = vec![];
         msg.to_any().encode(&mut tx_data).expect("encoding failed");
         let tx = Tx {
@@ -1695,9 +1718,15 @@ mod tests {
 
         // Start a transaction to notify the timing-out on closed
         let counterparty = ibc::dummy_channel_counterparty();
-        let packet =
-            ibc::packet_from_message(&msg, ibc::sequence(1), &counterparty);
-        let msg = ibc::msg_timeout_on_close(packet.clone(), ibc::sequence(1));
+        let packet = ibc::packet_from_message(
+            &msg,
+            ibc::actions::sequence(1),
+            &counterparty,
+        );
+        let msg = ibc::msg_timeout_on_close(
+            packet.clone(),
+            ibc::actions::sequence(1),
+        );
         let mut tx_data = vec![];
         msg.to_any().encode(&mut tx_data).expect("encoding failed");
         let tx = Tx {

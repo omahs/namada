@@ -4058,7 +4058,7 @@ dependencies = [
  "namada_vp_prelude",
  "pretty_assertions",
  "proptest",
- "prost 0.9.0",
+ "prost 0.11.3",
  "rand 0.8.5",
  "rust_decimal",
  "rust_decimal_macros",
