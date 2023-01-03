@@ -236,8 +236,8 @@ where
             &token,
         );
         let change = if is_receiver_chain_source(
-            packet.source_port,
-            packet.source_channel,
+            packet.source_port.clone(),
+            packet.source_channel.clone(),
             &data.token.denom,
         ) {
             // this chain is the source

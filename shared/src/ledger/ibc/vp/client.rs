@@ -15,6 +15,7 @@ use super::super::storage::{
 };
 use super::{Ibc, StateChange};
 use crate::ibc::clients::ics07_tendermint::consensus_state::ConsensusState as TmConsensusState;
+use crate::ibc::clients::ics07_tendermint::host_helpers::ValidateSelfClientContext;
 use crate::ibc::core::ics02_client::client_state::ClientState;
 use crate::ibc::core::ics02_client::client_type::ClientType;
 use crate::ibc::core::ics02_client::consensus_state::ConsensusState;
@@ -26,7 +27,8 @@ use crate::ibc::core::ics02_client::msgs::upgrade_client::MsgUpgradeClient;
 use crate::ibc::core::ics02_client::msgs::ClientMsg;
 use crate::ibc::core::ics04_channel::context::ChannelReader;
 use crate::ibc::core::ics23_commitment::commitment::CommitmentRoot;
-use crate::ibc::core::ics24_host::identifier::ClientId;
+use crate::ibc::core::ics23_commitment::specs::ProofSpecs;
+use crate::ibc::core::ics24_host::identifier::{ChainId, ClientId};
 use crate::ibc::core::ics26_routing::msgs::Ics26Envelope;
 #[cfg(any(feature = "ibc-mocks-abcipp", feature = "ibc-mocks"))]
 use crate::ibc::mock::consensus_state::MockConsensusState;
@@ -372,33 +374,6 @@ where
             .map_err(|e| Error::IbcEvent(e.to_string()))
     }
 
-    fn client_state_pre(
-        &self,
-        client_id: &ClientId,
-    ) -> Result<Box<dyn ClientState>> {
-        let key = client_state_key(client_id);
-        match self.ctx.read_bytes_pre(&key) {
-            Ok(Some(value)) => {
-                let any = Any::decode(&value[..]).map_err(|e| {
-                    Error::InvalidClient(format!(
-                        "Decoding the client state failed: ID {}, {}",
-                        client_id, e
-                    ))
-                })?;
-                decode_client_state(any).map_err(|e| {
-                    Error::InvalidClient(format!(
-                        "Decoding the client state failed: ID {}, {}",
-                        client_id, e
-                    ))
-                })
-            }
-            _ => Err(Error::InvalidClient(format!(
-                "The prior client state doesn't exist: ID {}",
-                client_id
-            ))),
-        }
-    }
-
     pub(super) fn client_counter_pre(&self) -> Result<u64> {
         let key = client_counter_key();
         self.read_counter_pre(&key)
@@ -609,9 +584,6 @@ where
     }
 }
 
-use crate::ibc::clients::ics07_tendermint::host_helpers::ValidateSelfClientContext;
-use crate::ibc::core::ics23_commitment::specs::ProofSpecs;
-use crate::ibc::core::ics24_host::identifier::ChainId;
 /// To validate ClientState of tendermint
 impl<'a, DB, H, CA> ValidateSelfClientContext for Ibc<'a, DB, H, CA>
 where
@@ -628,11 +600,7 @@ where
     }
 
     fn proof_specs(&self) -> &ProofSpecs {
-        use namada_core::ledger::storage::ics23_specs::ibc_proof_specs;
-
-        use crate::ledger::storage::traits::Sha256Hasher;
-
-        &ibc_proof_specs::<Sha256Hasher>().into()
+        &self.proof_specs
     }
 
     fn unbonding_period(&self) -> core::time::Duration {

@@ -15,6 +15,7 @@ use borsh::BorshDeserialize;
 use namada_core::ledger::ibc::storage::{
     client_id, ibc_prefix, is_client_counter_key, IbcPrefix,
 };
+use namada_core::ledger::storage::ics23_specs::ibc_proof_specs;
 use namada_core::ledger::storage::{self as ledger_storage, StorageHasher};
 use namada_core::proto::SignedTxData;
 use namada_core::types::address::{Address, InternalAddress};
@@ -25,8 +26,10 @@ use thiserror::Error;
 pub use token::{Error as IbcTokenError, IbcToken};
 
 use crate::ibc::core::ics02_client::context::ClientReader;
+use crate::ibc::core::ics23_commitment::specs::ProofSpecs;
 use crate::ibc::core::ics24_host::identifier::ChainId as IcsChainId;
 use crate::ledger::native_vp::{self, Ctx, NativeVp, VpEnv};
+use crate::ledger::storage::traits::Sha256Hasher;
 use crate::vm::WasmCacheAccess;
 
 #[allow(missing_docs)]
@@ -74,6 +77,8 @@ where
     pub ctx: Ctx<'a, DB, H, CA>,
     /// Chain ID
     chain_id: IcsChainId,
+    /// Proof specs
+    proof_specs: ProofSpecs,
     /// Client upgrade path
     upgrade_path: Vec<String>,
 }
@@ -84,10 +89,12 @@ where
     H: StorageHasher,
     CA: 'static + WasmCacheAccess,
 {
+    /// Initialize IBC VP
     pub fn new(ctx: Ctx<'a, DB, H, CA>, chain_id: &ChainId) -> Self {
         Self {
             ctx,
             chain_id: IcsChainId::from_string(chain_id.as_str()),
+            proof_specs: ibc_proof_specs::<Sha256Hasher>().into(),
             upgrade_path: vec![
                 "upgrade".to_string(),
                 "upgradedIBCState".to_string(),

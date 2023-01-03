@@ -307,7 +307,7 @@ where
         })?;
         let port_channel_id = PortChannelId {
             port_id: port_channel_seq_id.0.clone(),
-            channel_id: port_channel_seq_id.1,
+            channel_id: port_channel_seq_id.1.clone(),
         };
         self.verify_recv_proof(
             &port_channel_id,
@@ -344,7 +344,7 @@ where
 
         let port_channel_id = PortChannelId {
             port_id: port_channel_seq_id.0.clone(),
-            channel_id: port_channel_seq_id.1,
+            channel_id: port_channel_seq_id.1.clone(),
         };
         self.verify_ack_proof(
             &port_channel_id,
@@ -374,7 +374,7 @@ where
                 }
                 PortChannelId {
                     port_id: packet.source_port.clone(),
-                    channel_id: packet.source_channel,
+                    channel_id: packet.source_channel.clone(),
                 }
             }
             Phase::Recv => {
@@ -388,7 +388,7 @@ where
                 }
                 PortChannelId {
                     port_id: packet.destination_port.clone(),
-                    channel_id: packet.destination_channel,
+                    channel_id: packet.destination_channel.clone(),
                 }
             }
         };
@@ -430,11 +430,11 @@ where
         let counterparty = match phase {
             Phase::Send | Phase::Ack => Counterparty::new(
                 packet.destination_port.clone(),
-                Some(packet.destination_channel),
+                Some(packet.destination_channel.clone()),
             ),
             Phase::Recv => Counterparty::new(
                 packet.source_port.clone(),
-                Some(packet.source_channel),
+                Some(packet.source_channel.clone()),
             ),
         };
         if !channel.counterparty_matches(&counterparty) {
@@ -584,7 +584,7 @@ where
         // the counterparty should be equal to that of the channel
         let port_channel_id = PortChannelId {
             port_id: packet.source_port.clone(),
-            channel_id: packet.source_channel,
+            channel_id: packet.source_channel.clone(),
         };
         let channel = self
             .channel_end(&port_channel_id.port_id, &port_channel_id.channel_id)
@@ -596,7 +596,7 @@ where
             })?;
         let counterparty = Counterparty::new(
             packet.destination_port.clone(),
-            Some(packet.destination_channel),
+            Some(packet.destination_channel.clone()),
         );
         if !channel.counterparty_matches(&counterparty) {
             return Err(Error::InvalidPacket(format!(
@@ -618,7 +618,7 @@ where
                 // check that the counterpart channel has been closed
                 let expected_my_side = Counterparty::new(
                     packet.source_port.clone(),
-                    Some(packet.source_channel),
+                    Some(packet.source_channel.clone()),
                 );
                 let counterparty = connection.counterparty();
                 let conn_id =
@@ -730,7 +730,10 @@ where
         }
     }
 
-    fn packet_data_from_message(self, msg: &MsgTransfer) -> Result<PacketData> {
+    fn packet_data_from_message(
+        &self,
+        msg: &MsgTransfer,
+    ) -> Result<PacketData> {
         let denom = match token_hash_from_denom(&msg.token.denom)
             .map_err(|e| Error::Denom(format!("Invalid denom: error {}", e)))?
         {
@@ -788,7 +791,7 @@ where
         Ok(Packet {
             sequence,
             source_port: msg.source_port.clone(),
-            source_channel: msg.source_channel,
+            source_channel: msg.source_channel.clone(),
             destination_port: counterparty.port_id.clone(),
             destination_channel,
             data,

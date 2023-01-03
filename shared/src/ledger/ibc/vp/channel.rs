@@ -295,7 +295,7 @@ where
                 }
                 let commitment_key = (
                     msg.packet.source_port.clone(),
-                    msg.packet.source_channel,
+                    msg.packet.source_channel.clone(),
                     msg.packet.sequence,
                 );
                 self.validate_commitment_absence(commitment_key)?;
@@ -435,7 +435,7 @@ where
         }
         let expected_my_side = Counterparty::new(
             port_channel_id.port_id.clone(),
-            Some(port_channel_id.channel_id),
+            Some(port_channel_id.channel_id.clone()),
         );
         let proofs = Proofs::new(
             msg.proof_chan_end_on_b.clone(),
@@ -462,7 +462,7 @@ where
     ) -> Result<()> {
         let expected_my_side = Counterparty::new(
             port_channel_id.port_id.clone(),
-            Some(port_channel_id.channel_id),
+            Some(port_channel_id.channel_id.clone()),
         );
         let proofs = Proofs::new(
             msg.proof_chan_end_on_a.clone(),
@@ -489,7 +489,7 @@ where
     ) -> Result<()> {
         let expected_my_side = Counterparty::new(
             port_channel_id.port_id.clone(),
-            Some(port_channel_id.channel_id),
+            Some(port_channel_id.channel_id.clone()),
         );
         let proofs = Proofs::new(
             msg.proof_chan_end_on_a.clone(),

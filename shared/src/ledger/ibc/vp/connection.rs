@@ -180,7 +180,7 @@ where
                     State::Init => {
                         let ibc_msg = IbcMessage::decode(tx_data)?;
                         let msg = ibc_msg.msg_connection_open_ack()?;
-                        self.verify_connection_ack_proof(conn_id, conn, &msg)?;
+                        self.verify_connection_ack_proof(conn_id, &conn, &msg)?;
                         let event = make_open_ack_connection_event(
                             conn.client_id(),
                             conn.counterparty().client_id(),
@@ -193,7 +193,7 @@ where
                         let ibc_msg = IbcMessage::decode(tx_data)?;
                         let msg = ibc_msg.msg_connection_open_confirm()?;
                         self.verify_connection_confirm_proof(
-                            conn_id, conn, &msg,
+                            conn_id, &conn, &msg,
                         )?;
                         let event = make_open_confirm_connection_event(
                             conn.client_id(),
@@ -244,7 +244,7 @@ where
     fn verify_connection_ack_proof(
         &self,
         conn_id: &ConnectionId,
-        conn: ConnectionEnd,
+        conn: &ConnectionEnd,
         msg: &MsgConnectionOpenAck,
     ) -> Result<()> {
         // version check
@@ -297,7 +297,7 @@ where
     fn verify_connection_confirm_proof(
         &self,
         conn_id: &ConnectionId,
-        conn: ConnectionEnd,
+        conn: &ConnectionEnd,
         msg: &MsgConnectionOpenConfirm,
     ) -> Result<()> {
         // expected counterpart connection
@@ -314,7 +314,7 @@ where
         );
 
         self.verify_connection_proofs(
-            &conn,
+            conn,
             msg.proof_height_on_a,
             &expected_conn,
             &msg.proof_conn_end_on_a,
