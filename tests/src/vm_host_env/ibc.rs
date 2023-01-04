@@ -45,9 +45,7 @@ use namada::ibc::Height;
 use namada::ibc_proto::cosmos::base::v1beta1::Coin;
 use namada::ibc_proto::google::protobuf::Any;
 use namada::ibc_proto::ibc::core::commitment::v1::MerkleProof;
-use namada::ibc_proto::ibc::core::connection::v1::{
-    MsgConnectionOpenTry as RawMsgConnectionOpenTry, Version as RawVersion,
-};
+use namada::ibc_proto::ibc::core::connection::v1::MsgConnectionOpenTry as RawMsgConnectionOpenTry;
 use namada::ibc_proto::ics23::CommitmentProof;
 use namada::ibc_proto::protobuf::Protobuf;
 use namada::ledger::gas::VpGasMeter;
@@ -366,7 +364,7 @@ pub fn msg_connection_open_try(
         client_state: Some(client_state),
         counterparty: Some(dummy_connection_counterparty().into()),
         delay_period: 100000000,
-        counterparty_versions: vec![RawVersion::default()],
+        counterparty_versions: vec![ConnVersion::default().into()],
         proof_init: proofs.object_proof().clone().into(),
         proof_height: Some(proofs.height().into()),
         proof_consensus: proofs

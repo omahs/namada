@@ -131,7 +131,8 @@ where
                 let timestamp_post = self
                     .client_update_time(
                         client_id,
-                        Height::new(0, 0)
+                        // the height is not used, but zero isn't allowed
+                        Height::new(0, 1)
                             .expect("Height::new shouldn't failed"),
                     )
                     .map_err(|e| {
@@ -158,7 +159,8 @@ where
                 let height_post = self
                     .client_update_height(
                         client_id,
-                        Height::new(0, 0).expect("Height::new shouldn't faile"),
+                        // the height is not used, but zero isn't allowed
+                        Height::new(0, 1).expect("Height::new shouldn't faile"),
                     )
                     .map_err(|e| {
                         Error::InvalidTimestamp(format!(
@@ -291,8 +293,10 @@ where
                     client_id, height
                 ))
             })?;
+        // check the prior states
+        let prev_client_state = self.client_state_pre(client_id)?;
 
-        let updated_state = client_state
+        let updated_state = prev_client_state
             .check_header_and_update_state(
                 self,
                 client_id.clone(),
@@ -372,6 +376,33 @@ where
         let event = make_upgrade_client_event(client_id, &msg);
         self.check_emitted_event(event)
             .map_err(|e| Error::IbcEvent(e.to_string()))
+    }
+
+    fn client_state_pre(
+        &self,
+        client_id: &ClientId,
+    ) -> Result<Box<dyn ClientState>> {
+        let key = client_state_key(client_id);
+        match self.ctx.read_bytes_pre(&key) {
+            Ok(Some(value)) => {
+                let any = Any::decode(&value[..]).map_err(|e| {
+                    Error::InvalidClient(format!(
+                        "Decoding the client state failed: ID {}, {}",
+                        client_id, e
+                    ))
+                })?;
+                self.decode_client_state(any).map_err(|e| {
+                    Error::InvalidClient(format!(
+                        "Decoding the client state from Any failed: ID {}, {}",
+                        client_id, e
+                    ))
+                })
+            }
+            _ => Err(Error::InvalidClient(format!(
+                "The prior client state doesn't exist: ID {}",
+                client_id
+            ))),
+        }
     }
 
     pub(super) fn client_counter_pre(&self) -> Result<u64> {

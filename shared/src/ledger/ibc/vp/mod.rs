@@ -375,7 +375,6 @@ mod tests {
     use crate::ibc::core::ics03_connection::msgs::conn_open_ack::MsgConnectionOpenAck;
     use crate::ibc::core::ics03_connection::msgs::conn_open_confirm::MsgConnectionOpenConfirm;
     use crate::ibc::core::ics03_connection::msgs::conn_open_init::MsgConnectionOpenInit;
-    use crate::ibc::core::ics03_connection::msgs::conn_open_try::MsgConnectionOpenTry;
     use crate::ibc::core::ics03_connection::version::Version as ConnVersion;
     use crate::ibc::core::ics04_channel::channel::{
         ChannelEnd, Counterparty as ChanCounterparty, Order, State as ChanState,
@@ -403,9 +402,7 @@ mod tests {
     use crate::ibc::Height;
     use crate::ibc_proto::cosmos::base::v1beta1::Coin;
     use crate::ibc_proto::google::protobuf::Any;
-    use crate::ibc_proto::ibc::core::connection::v1::{
-        MsgConnectionOpenTry as RawMsgConnectionOpenTry, Version as RawVersion,
-    };
+    use crate::ibc_proto::ibc::core::connection::v1::MsgConnectionOpenTry as RawMsgConnectionOpenTry;
     use crate::ibc_proto::protobuf::Protobuf;
     use crate::ledger::gas::VpGasMeter;
     use crate::ledger::storage::testing::TestStorage;
@@ -471,7 +468,7 @@ mod tests {
             .write(&client_update_time_key, bytes)
             .expect("write failed");
         let client_update_height_key = client_update_height_key(&client_id);
-        let host_height = Height::new(10, 100).expect("invalid height");
+        let host_height = Height::new(0, 1).expect("invalid height");
         write_log
             .write(
                 &client_update_height_key,
@@ -727,7 +724,7 @@ mod tests {
         // update the client
         let client_id = get_client_id();
         let client_state_key = client_state_key(&get_client_id());
-        let height = Height::new(1, 11).expect("invalid height");
+        let height = Height::new(0, 11).expect("invalid height");
         let header = MockHeader {
             height,
             timestamp: Timestamp::now(),
@@ -759,7 +756,7 @@ mod tests {
         write_log
             .write(
                 &key,
-                Height::new(10, 101)
+                Height::new(0, 11)
                     .expect("invalid height")
                     .encode_vec()
                     .expect("encoding failed"),
@@ -920,7 +917,7 @@ mod tests {
             client_state: Some(client_state),
             counterparty: Some(get_conn_counterparty().into()),
             delay_period: 100000000,
-            counterparty_versions: vec![RawVersion::default()],
+            counterparty_versions: vec![ConnVersion::default().into()],
             proof_init: proof_conn.into(),
             proof_height: Some(consensus_height.into()),
             proof_consensus: proof_consensus.into(),

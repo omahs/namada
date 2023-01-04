@@ -37,15 +37,20 @@ where
         let msg = ibc_msg.msg_recv_packet()?;
         match serde_json::from_slice::<PacketData>(&msg.packet.data) {
             Ok(data) => {
-                let coin = data.token;
-                let token_hash = storage::calc_hash(&coin.denom.to_string());
+                let denom = format!(
+                    "{}/{}/{}",
+                    &msg.packet.destination_port,
+                    &msg.packet.destination_channel,
+                    &data.token.denom
+                );
+                let token_hash = storage::calc_hash(&denom);
                 let denom_key = storage::ibc_denom_key(token_hash);
                 match self.ctx.read_bytes_post(&denom_key) {
                     Ok(Some(v)) => match std::str::from_utf8(&v) {
-                        Ok(d) if d == coin.denom.to_string() => Ok(()),
+                        Ok(d) if d == denom => Ok(()),
                         Ok(d) => Err(Error::Denom(format!(
                             "Mismatch the denom: original {}, denom {}",
-                            coin.denom, d
+                            denom, d
                         ))),
                         Err(e) => Err(Error::Denom(format!(
                             "Decoding the denom failed: key {}, error {}",

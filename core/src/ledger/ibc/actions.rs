@@ -1410,7 +1410,7 @@ pub fn make_update_client_event(
     AbciEvent::from(UpdateClient::new(
         client_id.clone(),
         header.client_type(),
-        Height::new(0, 0).unwrap(),
+        header.height(),
         vec![header.height()],
         msg.header.clone(),
     ))

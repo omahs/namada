@@ -929,7 +929,7 @@ mod tests {
         // channel
         let channel_id = ibc::actions::channel_id(counter);
         let port_channel_id =
-            ibc::actions::port_channel_id(port_id, channel_id);
+            ibc::actions::port_channel_id(port_id, channel_id.clone());
         let channel_key = ibc::channel_key(&port_channel_id);
         tx::ctx()
             .write_bytes(&channel_key, msg.chan_end_on_a.encode_vec().unwrap())
@@ -976,7 +976,7 @@ mod tests {
         // insert a opened channel
         let channel_id = ibc::actions::channel_id(counter);
         let port_channel_id =
-            ibc::actions::port_channel_id(port_id, channel_id);
+            ibc::actions::port_channel_id(port_id, channel_id.clone());
         let channel_key = ibc::channel_key(&port_channel_id);
         let mut channel = msg.chan_end_on_a.clone();
         ibc::actions::open_channel(&mut channel);
@@ -1308,8 +1308,12 @@ mod tests {
         // Start a transaction to send a packet
         // Set this chain is the sink zone
         let denom = format!("{}/{}/{}", port_id, channel_id, token);
-        let msg =
-            ibc::msg_transfer(port_id.clone(), channel_id, denom, &sender);
+        let msg = ibc::msg_transfer(
+            port_id.clone(),
+            channel_id.clone(),
+            denom,
+            &sender,
+        );
         let mut tx_data = vec![];
         msg.to_any().encode(&mut tx_data).expect("encoding failed");
         let tx = Tx {
@@ -1369,7 +1373,7 @@ mod tests {
         // packet
         let packet = ibc::received_packet(
             port_id.clone(),
-            channel_id,
+            channel_id.clone(),
             ibc::actions::sequence(1),
             token.to_string(),
             &receiver,
