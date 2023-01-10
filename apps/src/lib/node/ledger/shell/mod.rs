@@ -40,7 +40,6 @@ use namada::types::address;
 use namada::types::address::{masp, masp_tx_key, Address};
 use namada::types::chain::ChainId;
 use namada::types::internal::WrapperTxInQueue;
-use namada::types::key::*;
 use namada::types::storage::{BlockHeight, Key, TxIndex};
 use namada::types::time::{DateTimeUtc, TimeZone, Utc};
 use namada::types::token::{self};
@@ -48,6 +47,7 @@ use namada::types::transaction::{
     hash_tx, process_tx, verify_decrypted_correctly, AffineCurve, DecryptedTx,
     EllipticCurve, PairingEngine, TxType, MIN_FEE,
 };
+use namada::types::{key::*, transaction};
 use namada::vm::wasm::{TxCache, VpCache};
 use namada::vm::WasmCacheRwAccess;
 use num_derive::{FromPrimitive, ToPrimitive};
@@ -601,7 +601,7 @@ where
         };
 
         // Tx signature check
-        let tx_type = match process_tx(tx.clone()) {
+        let tx_type = match process_tx(tx) {
             Ok(ty) => ty,
             Err(msg) => {
                 response.code = 2;
@@ -630,8 +630,9 @@ where
                 }
             }
 
-            let wrapper_hash_key =
-                replay_protection::get_tx_hash_key(&tx.unsigned_hash());
+            let wrapper_hash_key = replay_protection::get_tx_hash_key(
+                &transaction::unsigned_hash_tx(tx_bytes),
+            );
             match self.storage.has_key(&wrapper_hash_key) {
                 Ok((found, _)) => {
                     if found {
@@ -1123,7 +1124,7 @@ mod test_utils {
     }
 }
 
-/// Test the faliure cases of [`mempool_validate`]
+/// Test the failure cases of [`mempool_validate`]
 #[cfg(test)]
 mod test_mempool_validate {
     use super::test_utils::TestShell;
@@ -1131,7 +1132,7 @@ mod test_mempool_validate {
     use super::*;
     use namada::proto::SignedTxData;
     use namada::types::storage::Epoch;
-    use namada::types::transaction::Fee;
+    use namada::types::transaction::{Fee, WrapperTx};
 
     /// Mempool validation must reject unsigned wrappers
     #[test]
@@ -1155,6 +1156,8 @@ mod test_mempool_validate {
             0.into(),
             tx,
             Default::default(),
+            #[cfg(not(feature = "mainnet"))]
+            None,
         )
         .sign(&keypair)
         .expect("Wrapper signing failed");
@@ -1206,6 +1209,8 @@ mod test_mempool_validate {
             0.into(),
             tx,
             Default::default(),
+            #[cfg(not(feature = "mainnet"))]
+            None,
         )
         .sign(&keypair)
         .expect("Wrapper signing failed");
@@ -1296,6 +1301,8 @@ mod test_mempool_validate {
             0.into(),
             tx,
             Default::default(),
+            #[cfg(not(feature = "mainnet"))]
+            None,
         )
         .sign(&keypair)
         .expect("Wrapper signing failed");
@@ -1306,7 +1313,8 @@ mod test_mempool_validate {
         };
 
         // Write wrapper hash to storage
-        let wrapper_hash = wrapper.unsigned_hash();
+        let wrapper_hash =
+            super::transaction::unsigned_hash_tx(&wrapper.to_bytes());
         let wrapper_hash_key =
             replay_protection::get_tx_hash_key(&wrapper_hash);
         shell
