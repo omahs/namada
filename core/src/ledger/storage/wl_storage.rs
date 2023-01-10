@@ -23,6 +23,34 @@ where
     pub storage: Storage<D, H>,
 }
 
+/// Storage with write log for transactions (`vm::host_env::TxCtx`), which can
+/// only have mutable access to the `write_log` and read-only to the `storage`.
+#[derive(Debug)]
+pub struct TxWlStorage<'a, D, H>
+where
+    D: DB + for<'iter> DBIter<'iter> + 'static,
+    H: StorageHasher,
+{
+    /// Write log
+    pub write_log: &'a mut WriteLog,
+    /// Read-only storage access to DB.
+    pub storage: &'a Storage<D, H>,
+}
+
+/// Storage with write log for VPs (`vm::host_env::VpCtx`), which can
+/// only have read-only access to the `write_log` and the `storage`.
+#[derive(Debug)]
+pub struct VpWlStorage<'a, D, H>
+where
+    D: DB + for<'iter> DBIter<'iter> + 'static,
+    H: StorageHasher,
+{
+    /// Write log
+    pub write_log: &'a WriteLog,
+    /// Read-only storage access to DB.
+    pub storage: &'a Storage<D, H>,
+}
+
 impl<D, H> WlStorage<D, H>
 where
     D: DB + for<'iter> DBIter<'iter> + 'static,
@@ -65,9 +93,10 @@ where
 }
 
 /// Prefix iterator for [`WlStorage`].
+#[derive(Debug)]
 pub struct PrefixIter<'iter, D>
 where
-    D: DB + for<'iter_> DBIter<'iter_>,
+    D: DB + DBIter<'iter>,
 {
     /// Peekable storage iterator
     storage_iter: Peekable<<D as DBIter<'iter>>::PrefixIter>,
@@ -77,7 +106,7 @@ where
 
 impl<'iter, D> Iterator for PrefixIter<'iter, D>
 where
-    D: DB + for<'iter_> DBIter<'iter_>,
+    D: DB + DBIter<'iter>,
 {
     type Item = (String, Vec<u8>, u64);
 
@@ -177,7 +206,7 @@ where
             }
             None => {
                 // when not found in write log, try to read from the storage
-                StorageRead::read_bytes(&self.storage, key)
+                self.storage.db.read_subspace_val(key).into_storage_result()
             }
         }
     }
@@ -195,7 +224,7 @@ where
             }
             None => {
                 // when not found in write log, try to check the storage
-                StorageRead::has_key(&self.storage, key)
+                self.storage.block.tree.has_key(key).into_storage_result()
             }
         }
     }
@@ -204,8 +233,7 @@ where
         &'iter self,
         prefix: &storage::Key,
     ) -> storage_api::Result<Self::PrefixIter<'iter>> {
-        let storage_iter =
-            StorageRead::iter_prefix(&self.storage, prefix)?.peekable();
+        let storage_iter = self.storage.db.iter_prefix(prefix).peekable();
         let write_log_iter = self.write_log.iter_prefix(prefix).peekable();
         Ok(PrefixIter {
             storage_iter,
@@ -220,32 +248,270 @@ where
         Ok(iter.next().map(|(key, val, _gas)| (key, val)))
     }
 
-    fn get_chain_id(&self) -> storage_api::Result<String> {
-        StorageRead::get_chain_id(&self.storage)
+    fn get_chain_id(&self) -> std::result::Result<String, storage_api::Error> {
+        Ok(self.storage.chain_id.to_string())
     }
 
-    fn get_block_height(&self) -> storage_api::Result<storage::BlockHeight> {
-        StorageRead::get_block_height(&self.storage)
+    fn get_block_height(
+        &self,
+    ) -> std::result::Result<storage::BlockHeight, storage_api::Error> {
+        Ok(self.storage.block.height)
     }
 
-    fn get_block_hash(&self) -> storage_api::Result<storage::BlockHash> {
-        StorageRead::get_block_hash(&self.storage)
+    fn get_block_hash(
+        &self,
+    ) -> std::result::Result<storage::BlockHash, storage_api::Error> {
+        Ok(self.storage.block.hash.clone())
     }
 
-    fn get_block_epoch(&self) -> storage_api::Result<storage::Epoch> {
-        StorageRead::get_block_epoch(&self.storage)
+    fn get_block_epoch(
+        &self,
+    ) -> std::result::Result<storage::Epoch, storage_api::Error> {
+        Ok(self.storage.block.epoch)
     }
 
-    fn get_tx_index(&self) -> storage_api::Result<storage::TxIndex> {
-        StorageRead::get_tx_index(&self.storage)
+    fn get_tx_index(
+        &self,
+    ) -> std::result::Result<storage::TxIndex, storage_api::Error> {
+        Ok(self.storage.tx_index)
     }
 
     fn get_native_token(&self) -> storage_api::Result<Address> {
-        StorageRead::get_native_token(&self.storage)
+        Ok(self.storage.native_token.clone())
+    }
+}
+
+// TODO re-use with WlStorage
+impl<D, H> StorageRead for TxWlStorage<'_, D, H>
+where
+    D: DB + for<'iter> DBIter<'iter>,
+    H: StorageHasher,
+{
+    type PrefixIter<'iter> = PrefixIter<'iter, D> where Self: 'iter;
+
+    fn read_bytes(
+        &self,
+        key: &storage::Key,
+    ) -> storage_api::Result<Option<Vec<u8>>> {
+        // try to read from the write log first
+        let (log_val, _gas) = self.write_log.read(key);
+        match log_val {
+            Some(&write_log::StorageModification::Write { ref value }) => {
+                Ok(Some(value.clone()))
+            }
+            Some(&write_log::StorageModification::Delete) => Ok(None),
+            Some(&write_log::StorageModification::InitAccount {
+                ref vp,
+                ..
+            }) => Ok(Some(vp.clone())),
+            Some(&write_log::StorageModification::Temp { ref value }) => {
+                Ok(Some(value.clone()))
+            }
+            None => {
+                // when not found in write log, try to read from the storage
+                self.storage.db.read_subspace_val(key).into_storage_result()
+            }
+        }
+    }
+
+    fn has_key(&self, key: &storage::Key) -> storage_api::Result<bool> {
+        // try to read from the write log first
+        let (log_val, _gas) = self.write_log.read(key);
+        match log_val {
+            Some(&write_log::StorageModification::Write { .. })
+            | Some(&write_log::StorageModification::InitAccount { .. })
+            | Some(&write_log::StorageModification::Temp { .. }) => Ok(true),
+            Some(&write_log::StorageModification::Delete) => {
+                // the given key has been deleted
+                Ok(false)
+            }
+            None => {
+                // when not found in write log, try to check the storage
+                self.storage.block.tree.has_key(key).into_storage_result()
+            }
+        }
+    }
+
+    fn iter_prefix<'iter>(
+        &'iter self,
+        prefix: &storage::Key,
+    ) -> storage_api::Result<Self::PrefixIter<'iter>> {
+        let storage_iter = self.storage.db.iter_prefix(prefix).peekable();
+        let write_log_iter = self.write_log.iter_prefix(prefix).peekable();
+        Ok(PrefixIter {
+            storage_iter,
+            write_log_iter,
+        })
+    }
+
+    fn iter_next<'iter>(
+        &'iter self,
+        iter: &mut Self::PrefixIter<'iter>,
+    ) -> storage_api::Result<Option<(String, Vec<u8>)>> {
+        Ok(iter.next().map(|(key, val, _gas)| (key, val)))
+    }
+
+    fn get_chain_id(&self) -> std::result::Result<String, storage_api::Error> {
+        Ok(self.storage.chain_id.to_string())
+    }
+
+    fn get_block_height(
+        &self,
+    ) -> std::result::Result<storage::BlockHeight, storage_api::Error> {
+        Ok(self.storage.block.height)
+    }
+
+    fn get_block_hash(
+        &self,
+    ) -> std::result::Result<storage::BlockHash, storage_api::Error> {
+        Ok(self.storage.block.hash.clone())
+    }
+
+    fn get_block_epoch(
+        &self,
+    ) -> std::result::Result<storage::Epoch, storage_api::Error> {
+        Ok(self.storage.block.epoch)
+    }
+
+    fn get_tx_index(
+        &self,
+    ) -> std::result::Result<storage::TxIndex, storage_api::Error> {
+        Ok(self.storage.tx_index)
+    }
+
+    fn get_native_token(&self) -> storage_api::Result<Address> {
+        Ok(self.storage.native_token.clone())
+    }
+}
+
+// TODO re-use with WlStorage
+impl<D, H> StorageRead for VpWlStorage<'_, D, H>
+where
+    D: DB + for<'iter> DBIter<'iter>,
+    H: StorageHasher,
+{
+    type PrefixIter<'iter> = PrefixIter<'iter, D> where Self: 'iter;
+
+    fn read_bytes(
+        &self,
+        key: &storage::Key,
+    ) -> storage_api::Result<Option<Vec<u8>>> {
+        // try to read from the write log first
+        let (log_val, _gas) = self.write_log.read(key);
+        match log_val {
+            Some(&write_log::StorageModification::Write { ref value }) => {
+                Ok(Some(value.clone()))
+            }
+            Some(&write_log::StorageModification::Delete) => Ok(None),
+            Some(&write_log::StorageModification::InitAccount {
+                ref vp,
+                ..
+            }) => Ok(Some(vp.clone())),
+            Some(&write_log::StorageModification::Temp { ref value }) => {
+                Ok(Some(value.clone()))
+            }
+            None => {
+                // when not found in write log, try to read from the storage
+                self.storage.db.read_subspace_val(key).into_storage_result()
+            }
+        }
+    }
+
+    fn has_key(&self, key: &storage::Key) -> storage_api::Result<bool> {
+        // try to read from the write log first
+        let (log_val, _gas) = self.write_log.read(key);
+        match log_val {
+            Some(&write_log::StorageModification::Write { .. })
+            | Some(&write_log::StorageModification::InitAccount { .. })
+            | Some(&write_log::StorageModification::Temp { .. }) => Ok(true),
+            Some(&write_log::StorageModification::Delete) => {
+                // the given key has been deleted
+                Ok(false)
+            }
+            None => {
+                // when not found in write log, try to check the storage
+                self.storage.block.tree.has_key(key).into_storage_result()
+            }
+        }
+    }
+
+    fn iter_prefix<'iter>(
+        &'iter self,
+        prefix: &storage::Key,
+    ) -> storage_api::Result<Self::PrefixIter<'iter>> {
+        let storage_iter = self.storage.db.iter_prefix(prefix).peekable();
+        let write_log_iter = self.write_log.iter_prefix(prefix).peekable();
+        Ok(PrefixIter {
+            storage_iter,
+            write_log_iter,
+        })
+    }
+
+    fn iter_next<'iter>(
+        &'iter self,
+        iter: &mut Self::PrefixIter<'iter>,
+    ) -> storage_api::Result<Option<(String, Vec<u8>)>> {
+        Ok(iter.next().map(|(key, val, _gas)| (key, val)))
+    }
+
+    fn get_chain_id(&self) -> std::result::Result<String, storage_api::Error> {
+        Ok(self.storage.chain_id.to_string())
+    }
+
+    fn get_block_height(
+        &self,
+    ) -> std::result::Result<storage::BlockHeight, storage_api::Error> {
+        Ok(self.storage.block.height)
+    }
+
+    fn get_block_hash(
+        &self,
+    ) -> std::result::Result<storage::BlockHash, storage_api::Error> {
+        Ok(self.storage.block.hash.clone())
+    }
+
+    fn get_block_epoch(
+        &self,
+    ) -> std::result::Result<storage::Epoch, storage_api::Error> {
+        Ok(self.storage.block.epoch)
+    }
+
+    fn get_tx_index(
+        &self,
+    ) -> std::result::Result<storage::TxIndex, storage_api::Error> {
+        Ok(self.storage.tx_index)
+    }
+
+    fn get_native_token(&self) -> storage_api::Result<Address> {
+        Ok(self.storage.native_token.clone())
     }
 }
 
 impl<D, H> StorageWrite for WlStorage<D, H>
+where
+    D: DB + for<'iter> DBIter<'iter>,
+    H: StorageHasher,
+{
+    fn write_bytes(
+        &mut self,
+        key: &storage::Key,
+        val: impl AsRef<[u8]>,
+    ) -> storage_api::Result<()> {
+        let _ = self
+            .write_log
+            .write(key, val.as_ref().to_vec())
+            .into_storage_result();
+        Ok(())
+    }
+
+    fn delete(&mut self, key: &storage::Key) -> storage_api::Result<()> {
+        let _ = self.write_log.delete(key).into_storage_result();
+        Ok(())
+    }
+}
+
+// TODO re-use with WlStorage
+impl<D, H> StorageWrite for TxWlStorage<'_, D, H>
 where
     D: DB + for<'iter> DBIter<'iter>,
     H: StorageHasher,

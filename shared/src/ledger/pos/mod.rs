@@ -32,14 +32,13 @@ pub fn into_tm_voting_power(
 }
 
 /// Initialize storage in the genesis block.
-pub fn init_genesis_storage<'a, DB, H>(
-    storage: &mut Storage<DB, H>,
+pub fn init_genesis_storage<'a, S>(
+    storage: &mut S,
     params: &'a PosParams,
     validators: impl Iterator<Item = &'a GenesisValidator> + Clone + 'a,
     current_epoch: Epoch,
 ) where
-    DB: ledger_storage::DB + for<'iter> ledger_storage::DBIter<'iter>,
-    H: StorageHasher,
+    S: PosBase,
 {
     storage
         .init_genesis(params, validators, current_epoch)

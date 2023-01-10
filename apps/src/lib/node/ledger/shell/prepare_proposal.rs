@@ -71,13 +71,14 @@ where
                 .collect();
 
             // decrypt the wrapper txs included in the previous block
-            let decrypted_txs = self.storage.tx_queue.iter().map(|tx| {
-                Tx::from(match tx.decrypt(privkey) {
-                    Ok(tx) => DecryptedTx::Decrypted(tx),
-                    _ => DecryptedTx::Undecryptable(tx.clone()),
-                })
-                .to_bytes()
-            });
+            let decrypted_txs =
+                self.wl_storage.storage.tx_queue.iter().map(|tx| {
+                    Tx::from(match tx.decrypt(privkey) {
+                        Ok(tx) => DecryptedTx::Decrypted(tx),
+                        _ => DecryptedTx::Undecryptable(tx.clone()),
+                    })
+                    .to_bytes()
+                });
             #[cfg(feature = "abcipp")]
             let mut decrypted_txs: Vec<_> =
                 decrypted_txs.map(record::add).collect();
@@ -188,7 +189,7 @@ mod test_prepare_proposal {
                 WrapperTx::new(
                     Fee {
                         amount: 0.into(),
-                        token: shell.storage.native_token.clone(),
+                        token: shell.wl_storage.native_token.clone(),
                     },
                     &keypair,
                     Epoch(0),
@@ -243,7 +244,7 @@ mod test_prepare_proposal {
             let wrapper_tx = WrapperTx::new(
                 Fee {
                     amount: 0.into(),
-                    token: shell.storage.native_token.clone(),
+                    token: shell.wl_storage.native_token.clone(),
                 },
                 &keypair,
                 Epoch(0),

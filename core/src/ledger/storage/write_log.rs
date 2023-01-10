@@ -73,6 +73,7 @@ pub struct WriteLog {
 }
 
 /// Write log prefix iterator
+#[derive(Debug)]
 pub struct PrefixIter {
     /// The concrete iterator for modifications sorted by storage keys
     pub iter: std::vec::IntoIter<(storage::Key, StorageModification)>,

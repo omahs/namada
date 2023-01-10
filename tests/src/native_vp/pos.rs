@@ -117,17 +117,20 @@ pub fn init_pos(
     tx_host_env::with(|tx_env| {
         // Ensure that all the used
         // addresses exist
-        let native_token = tx_env.storage.native_token.clone();
+        let native_token = tx_env.wl_storage.storage.native_token.clone();
         tx_env.spawn_accounts([&native_token]);
         for validator in genesis_validators {
             tx_env.spawn_accounts([&validator.address]);
         }
-        tx_env.storage.block.epoch = start_epoch;
+        tx_env.wl_storage.storage.block.epoch = start_epoch;
         // Initialize PoS storage
         tx_env
-            .storage
+            .wl_storage
             .init_genesis(params, genesis_validators.iter(), start_epoch)
             .unwrap();
+
+        // Commit changes in WL to storage
+        tx_env.wl_storage.commit_genesis().unwrap();
     });
 }
 

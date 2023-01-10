@@ -29,8 +29,9 @@ use namada::ledger::pos::namada_proof_of_stake::types::{
 use namada::ledger::pos::namada_proof_of_stake::PosBase;
 use namada::ledger::storage::write_log::WriteLog;
 use namada::ledger::storage::{
-    DBIter, Sha256Hasher, Storage, StorageHasher, DB,
+    DBIter, Sha256Hasher, Storage, StorageHasher, WlStorage, DB,
 };
+use namada::ledger::storage_api::StorageRead;
 use namada::ledger::{ibc, pos, protocol};
 use namada::proto::{self, Tx};
 use namada::types::address::{masp, masp_tx_key, Address};
@@ -192,12 +193,10 @@ where
     /// The id of the current chain
     #[allow(dead_code)]
     chain_id: ChainId,
-    /// The persistent storage
-    pub(super) storage: Storage<D, H>,
+    /// The persistent storage with write log
+    pub(super) wl_storage: WlStorage<D, H>,
     /// Gas meter for the current block
     gas_meter: BlockGasMeter,
-    /// Write log for the current block
-    write_log: WriteLog,
     /// Byzantine validators given from ABCI++ `prepare_proposal` are stored in
     /// this field. They will be slashed when we finalize the block.
     byzantine_validators: Vec<Evidence>,
@@ -312,11 +311,14 @@ where
             TendermintMode::Seed => ShellMode::Seed,
         };
 
+        let wl_storage = WlStorage {
+            storage,
+            write_log: WriteLog::default(),
+        };
         Self {
             chain_id,
-            storage,
+            wl_storage,
             gas_meter: BlockGasMeter::default(),
-            write_log: WriteLog::default(),
             byzantine_validators: vec![],
             base_dir,
             wasm_dir,
@@ -351,14 +353,14 @@ where
     /// Iterate over the wrapper txs in order
     #[allow(dead_code)]
     fn iter_tx_queue(&mut self) -> impl Iterator<Item = &WrapperTx> {
-        self.storage.tx_queue.iter()
+        self.wl_storage.storage.tx_queue.iter()
     }
 
     /// Load the Merkle root hash and the height of the last committed block, if
     /// any. This is returned when ABCI sends an `info` request.
     pub fn last_state(&mut self) -> response::Info {
         let mut response = response::Info::default();
-        let result = self.storage.get_state();
+        let result = self.wl_storage.storage.get_state();
 
         match result {
             Some((root, height)) => {
@@ -386,7 +388,7 @@ where
     where
         T: Clone + BorshDeserialize,
     {
-        let result = self.storage.read(key);
+        let result = self.wl_storage.storage.read(key);
 
         match result {
             Ok((bytes, _gas)) => match bytes {
@@ -402,7 +404,7 @@ where
 
     /// Read the bytes for a storage key dropping any error
     pub fn read_storage_key_bytes(&self, key: &Key) -> Option<Vec<u8>> {
-        let result = self.storage.read(key);
+        let result = self.wl_storage.storage.read(key);
 
         match result {
             Ok((bytes, _gas)) => bytes,
@@ -415,8 +417,8 @@ where
         if !self.byzantine_validators.is_empty() {
             let byzantine_validators =
                 mem::take(&mut self.byzantine_validators);
-            let pos_params = self.storage.read_pos_params();
-            let current_epoch = self.storage.block.epoch;
+            let pos_params = self.wl_storage.read_pos_params();
+            let current_epoch = self.wl_storage.storage.block.epoch;
             for evidence in byzantine_validators {
                 tracing::info!("Processing evidence {evidence:?}.");
                 let evidence_height = match u64::try_from(evidence.height) {
@@ -430,6 +432,7 @@ where
                     }
                 };
                 let evidence_epoch = match self
+                    .wl_storage
                     .storage
                     .block
                     .pred_epochs
@@ -486,7 +489,7 @@ where
                     }
                 };
                 let validator = match self
-                    .storage
+                    .wl_storage
                     .read_validator_address_raw_hash(&validator_raw_hash)
                 {
                     Some(validator) => validator,
@@ -505,7 +508,7 @@ where
                     evidence_epoch,
                     evidence_height
                 );
-                if let Err(err) = self.storage.slash(
+                if let Err(err) = self.wl_storage.slash(
                     &pos_params,
                     current_epoch,
                     evidence_epoch,
@@ -544,22 +547,23 @@ where
     pub fn commit(&mut self) -> response::Commit {
         let mut response = response::Commit::default();
         // commit changes from the write-log to storage
-        self.write_log
-            .commit_block(&mut self.storage)
+        self.wl_storage
+            .write_log
+            .commit_block(&mut self.wl_storage.storage)
             .expect("Expected committing block write log success");
         // store the block's data in DB
-        self.storage.commit_block().unwrap_or_else(|e| {
+        self.wl_storage.commit_block().unwrap_or_else(|e| {
             tracing::error!(
                 "Encountered a storage error while committing a block {:?}",
                 e
             )
         });
 
-        let root = self.storage.merkle_root();
+        let root = self.wl_storage.storage.merkle_root();
         tracing::info!(
             "Committed block hash: {}, height: {}",
             root,
-            self.storage.last_height,
+            self.wl_storage.storage.last_height,
         );
         response.data = root.0;
         response
@@ -601,7 +605,7 @@ where
                     TxIndex::default(),
                     &mut gas_meter,
                     &mut write_log,
-                    &self.storage,
+                    &self.wl_storage.storage,
                     &mut vp_wasm_cache,
                     &mut tx_wasm_cache,
                 )
@@ -636,21 +640,18 @@ where
             genesis::genesis_config::open_genesis_config(genesis_path).unwrap(),
         );
         self.mode.get_validator_address().map(|addr| {
-            let pk_bytes = self
-                .storage
+            let sk: common::SecretKey = self
+                .wl_storage
                 .read(&pk_key(addr))
                 .expect(
                     "A validator should have a public key associated with \
                      it's established account",
                 )
-                .0
                 .expect(
                     "A validator should have a public key associated with \
                      it's established account",
                 );
-            let pk = common::SecretKey::deserialize(&mut pk_bytes.as_slice())
-                .expect("Validator's public key should be deserializable")
-                .ref_to();
+            let pk = sk.ref_to();
             wallet.find_key_by_pk(&pk).expect(
                 "A validator's established keypair should be stored in its \
                  wallet",
@@ -822,7 +823,7 @@ mod test_utils {
         /// in the current block proposal
         #[cfg(test)]
         pub fn enqueue_tx(&mut self, wrapper: WrapperTx) {
-            self.shell.storage.tx_queue.push(wrapper);
+            self.shell.wl_storage.tx_queue.push(wrapper);
         }
     }
 
@@ -899,7 +900,7 @@ mod test_utils {
             tx,
             Default::default(),
         );
-        shell.storage.tx_queue.push(wrapper);
+        shell.wl_storage.tx_queue.push(wrapper);
         // Artificially increase the block height so that chain
         // will read the new block when restarted
         let merkle_tree = MerkleTree::<Sha256Hasher>::default();
@@ -908,7 +909,7 @@ mod test_utils {
         let pred_epochs = Default::default();
         let address_gen = EstablishedAddressGen::new("test");
         shell
-            .storage
+            .wl_storage
             .db
             .write_block(BlockStateWrite {
                 merkle_tree_stores: stores,
@@ -921,7 +922,7 @@ mod test_utils {
                 next_epoch_min_start_time: DateTimeUtc::now(),
                 address_gen: &address_gen,
                 results: &BlockResults::default(),
-                tx_queue: &shell.storage.tx_queue,
+                tx_queue: &shell.wl_storage.tx_queue,
             })
             .expect("Test failed");
 
@@ -942,6 +943,6 @@ mod test_utils {
             tx_wasm_compilation_cache,
             address::nam(),
         );
-        assert!(!shell.storage.tx_queue.is_empty());
+        assert!(!shell.wl_storage.tx_queue.is_empty());
     }
 }

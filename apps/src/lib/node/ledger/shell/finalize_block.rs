@@ -2,6 +2,7 @@
 
 use namada::ledger::pos::types::into_tm_voting_power;
 use namada::ledger::protocol;
+use namada::ledger::storage::TxWlStorage;
 use namada::types::storage::{BlockHash, BlockResults, Header};
 
 use super::governance::execute_governance_proposals;
@@ -52,7 +53,7 @@ where
         }
 
         // Tracks the accepted transactions
-        self.storage.block.results = BlockResults::default();
+        self.wl_storage.storage.block.results = BlockResults::default();
         for (tx_index, processed_tx) in req.txs.iter().enumerate() {
             let tx = if let Ok(tx) = Tx::try_from(processed_tx.tx.as_ref()) {
                 tx
@@ -122,19 +123,19 @@ where
                 // if the rejected tx was decrypted, remove it
                 // from the queue of txs to be processed
                 if let TxType::Decrypted(_) = &tx_type {
-                    self.storage.tx_queue.pop();
+                    self.wl_storage.storage.tx_queue.pop();
                 }
                 continue;
             }
 
             let mut tx_event = match &tx_type {
                 TxType::Wrapper(_wrapper) => {
-                    self.storage.tx_queue.push(_wrapper.clone());
+                    self.wl_storage.storage.tx_queue.push(_wrapper.clone());
                     Event::new_tx_event(&tx_type, height.0)
                 }
                 TxType::Decrypted(inner) => {
                     // We remove the corresponding wrapper tx from the queue
-                    self.storage.tx_queue.pop();
+                    self.wl_storage.storage.tx_queue.pop();
                     let mut event = Event::new_tx_event(&tx_type, height.0);
                     if let DecryptedTx::Undecryptable(_) = inner {
                         event["log"] =
@@ -168,8 +169,8 @@ where
                         .expect("transaction index out of bounds"),
                 ),
                 &mut self.gas_meter,
-                &mut self.write_log,
-                &self.storage,
+                &mut self.wl_storage.write_log,
+                &self.wl_storage.storage,
                 &mut self.vp_wasm_cache,
                 &mut self.tx_wasm_cache,
             )
@@ -183,10 +184,14 @@ where
                             tx_event["hash"],
                             result
                         );
-                        self.write_log.commit_tx();
+                        self.wl_storage.commit_tx();
                         if !tx_event.contains_key("code") {
                             tx_event["code"] = ErrorCodes::Ok.into();
-                            self.storage.block.results.accept(tx_index);
+                            self.wl_storage
+                                .storage
+                                .block
+                                .results
+                                .accept(tx_index);
                         }
                         if let Some(ibc_event) = &result.ibc_event {
                             // Add the IBC event besides the tx_event
@@ -215,7 +220,7 @@ where
                             tx_event["hash"],
                             result.vps_result.rejected_vps
                         );
-                        self.write_log.drop_tx();
+                        self.wl_storage.write_log.drop_tx();
                         tx_event["code"] = ErrorCodes::InvalidTx.into();
                     }
                     tx_event["gas_used"] = result.gas_used.to_string();
@@ -227,7 +232,7 @@ where
                         tx_event["hash"],
                         msg
                     );
-                    self.write_log.drop_tx();
+                    self.wl_storage.write_log.drop_tx();
                     tx_event["gas_used"] = self
                         .gas_meter
                         .get_current_transaction_gas()
@@ -264,22 +269,25 @@ where
         hash: BlockHash,
         byzantine_validators: Vec<Evidence>,
     ) -> (BlockHeight, bool) {
-        let height = self.storage.last_height + 1;
+        let height = self.wl_storage.storage.last_height + 1;
 
         self.gas_meter.reset();
 
-        self.storage
+        self.wl_storage
+            .storage
             .begin_block(hash, height)
             .expect("Beginning a block shouldn't fail");
 
         let header_time = header.time;
-        self.storage
+        self.wl_storage
+            .storage
             .set_header(header)
             .expect("Setting a header shouldn't fail");
 
         self.byzantine_validators = byzantine_validators;
 
         let new_epoch = self
+            .wl_storage
             .storage
             .update_epoch(height, header_time)
             .expect("Must be able to update epoch");
@@ -292,37 +300,38 @@ where
     /// changes to the validator sets and consensus parameters
     fn update_epoch(&self, response: &mut shim::response::FinalizeBlock) {
         // Apply validator set update
-        let (current_epoch, _gas) = self.storage.get_current_epoch();
-        let pos_params = self.storage.read_pos_params();
+        let (current_epoch, _gas) = self.wl_storage.storage.get_current_epoch();
+        let pos_params = self.wl_storage.read_pos_params();
         // TODO ABCI validator updates on block H affects the validator set
         // on block H+2, do we need to update a block earlier?
-        self.storage.validator_set_update(current_epoch, |update| {
-            let (consensus_key, power) = match update {
-                ValidatorSetUpdate::Active(ActiveValidator {
-                    consensus_key,
-                    bonded_stake,
-                }) => {
-                    let power: i64 = into_tm_voting_power(
-                        pos_params.tm_votes_per_token,
+        self.wl_storage
+            .validator_set_update(current_epoch, |update| {
+                let (consensus_key, power) = match update {
+                    ValidatorSetUpdate::Active(ActiveValidator {
+                        consensus_key,
                         bonded_stake,
-                    );
-                    (consensus_key, power)
-                }
-                ValidatorSetUpdate::Deactivated(consensus_key) => {
-                    // Any validators that have become inactive must
-                    // have voting power set to 0 to remove them from
-                    // the active set
-                    let power = 0_i64;
-                    (consensus_key, power)
-                }
-            };
-            let pub_key = TendermintPublicKey {
-                sum: Some(key_to_tendermint(&consensus_key).unwrap()),
-            };
-            let pub_key = Some(pub_key);
-            let update = ValidatorUpdate { pub_key, power };
-            response.validator_updates.push(update);
-        });
+                    }) => {
+                        let power: i64 = into_tm_voting_power(
+                            pos_params.tm_votes_per_token,
+                            bonded_stake,
+                        );
+                        (consensus_key, power)
+                    }
+                    ValidatorSetUpdate::Deactivated(consensus_key) => {
+                        // Any validators that have become inactive must
+                        // have voting power set to 0 to remove them from
+                        // the active set
+                        let power = 0_i64;
+                        (consensus_key, power)
+                    }
+                };
+                let pub_key = TendermintPublicKey {
+                    sum: Some(key_to_tendermint(&consensus_key).unwrap()),
+                };
+                let pub_key = Some(pub_key);
+                let update = ValidatorUpdate { pub_key, power };
+                response.validator_updates.push(update);
+            });
     }
 }
 
@@ -357,7 +366,7 @@ mod test_finalize_block {
             let wrapper = WrapperTx::new(
                 Fee {
                     amount: i.into(),
-                    token: shell.storage.native_token.clone(),
+                    token: shell.wl_storage.storage.native_token.clone(),
                 },
                 &keypair,
                 Epoch(0),
@@ -428,7 +437,7 @@ mod test_finalize_block {
         let wrapper = WrapperTx::new(
             Fee {
                 amount: 0.into(),
-                token: shell.storage.native_token.clone(),
+                token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
             Epoch(0),
@@ -460,7 +469,7 @@ mod test_finalize_block {
             assert_eq!(code, &String::from(ErrorCodes::InvalidTx));
         }
         // check that the corresponding wrapper tx was removed from the queue
-        assert!(shell.storage.tx_queue.is_empty());
+        assert!(shell.wl_storage.storage.tx_queue.is_empty());
     }
 
     /// Test that if a tx is undecryptable, it is applied
@@ -480,7 +489,7 @@ mod test_finalize_block {
         let wrapper = WrapperTx {
             fee: Fee {
                 amount: 0.into(),
-                token: shell.storage.native_token.clone(),
+                token: shell.wl_storage.storage.native_token.clone(),
             },
             pk: keypair.ref_to(),
             epoch: Epoch(0),
@@ -516,7 +525,7 @@ mod test_finalize_block {
             assert!(log.contains("Transaction could not be decrypted."))
         }
         // check that the corresponding wrapper tx was removed from the queue
-        assert!(shell.storage.tx_queue.is_empty());
+        assert!(shell.wl_storage.storage.tx_queue.is_empty());
     }
 
     /// Test that the wrapper txs are queued in the order they
@@ -546,7 +555,7 @@ mod test_finalize_block {
             let wrapper_tx = WrapperTx::new(
                 Fee {
                     amount: 0.into(),
-                    token: shell.storage.native_token.clone(),
+                    token: shell.wl_storage.storage.native_token.clone(),
                 },
                 &keypair,
                 Epoch(0),
@@ -577,7 +586,7 @@ mod test_finalize_block {
             let wrapper_tx = WrapperTx::new(
                 Fee {
                     amount: 0.into(),
-                    token: shell.storage.native_token.clone(),
+                    token: shell.wl_storage.storage.native_token.clone(),
                 },
                 &keypair,
                 Epoch(0),

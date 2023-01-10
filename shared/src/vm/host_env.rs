@@ -5,6 +5,7 @@ use std::convert::TryInto;
 use std::num::TryFromIntError;
 
 use borsh::{BorshDeserialize, BorshSerialize};
+use namada_core::ledger::storage::{TxWlStorage, VpWlStorage};
 use namada_core::types::internal::KeyVal;
 use thiserror::Error;
 
@@ -165,6 +166,12 @@ where
         };
 
         Self { memory, ctx }
+    }
+
+    pub fn wl_storage(&self) -> TxWlStorage<'a, DB, H> {
+        let write_log = unsafe { self.ctx.write_log.get() };
+        let storage = unsafe { self.ctx.storage.get() };
+        TxWlStorage { write_log, storage }
     }
 }
 
@@ -335,6 +342,12 @@ where
         );
 
         Self { memory, ctx }
+    }
+
+    pub fn wl_storage(&self) -> VpWlStorage<'a, DB, H> {
+        let write_log = unsafe { self.ctx.write_log.get() };
+        let storage = unsafe { self.ctx.storage.get() };
+        VpWlStorage { write_log, storage }
     }
 }
 
@@ -684,7 +697,7 @@ pub fn tx_iter_prefix<MEM, DB, H, CA>(
 ) -> TxResult<u64>
 where
     MEM: VmMemory,
-    DB: storage::DB + for<'iter> storage::DBIter<'iter>,
+    DB: 'static + storage::DB + for<'iter> storage::DBIter<'iter>,
     H: StorageHasher,
     CA: WasmCacheAccess,
 {
@@ -699,9 +712,13 @@ where
     let prefix =
         Key::parse(prefix).map_err(TxRuntimeError::StorageDataError)?;
 
-    let storage = unsafe { env.ctx.storage.get() };
     let iterators = unsafe { env.ctx.iterators.get() };
-    let (iter, gas) = storage.iter_prefix(&prefix);
+    let wl_storage = env.wl_storage();
+    let iter = namada_core::ledger::storage_api::StorageRead::iter_prefix(
+        &wl_storage,
+        &prefix,
+    )
+    .expect("TODO");
     tx_add_gas(env, gas)?;
     Ok(iterators.insert(iter).id())
 }
@@ -1218,7 +1235,7 @@ pub fn vp_iter_prefix<MEM, DB, H, EVAL, CA>(
 ) -> vp_host_fns::EnvResult<u64>
 where
     MEM: VmMemory,
-    DB: storage::DB + for<'iter> storage::DBIter<'iter>,
+    DB: 'static + storage::DB + for<'iter> storage::DBIter<'iter>,
     H: StorageHasher,
     EVAL: VpEvaluator,
     CA: WasmCacheAccess,
@@ -1234,8 +1251,13 @@ where
         .map_err(vp_host_fns::RuntimeError::StorageDataError)?;
     tracing::debug!("vp_iter_prefix {}", prefix);
 
-    let storage = unsafe { env.ctx.storage.get() };
-    let iter = vp_host_fns::iter_prefix(gas_meter, storage, &prefix)?;
+    let wl_storage = env.wl_storage();
+    let iter = namada_core::ledger::storage_api::StorageRead::iter_prefix(
+        &wl_storage,
+        &prefix,
+    )
+    .expect("TODO");
+    // let iter = vp_host_fns::iter_prefix(gas_meter, storage, &prefix)?;
     let iterators = unsafe { env.ctx.iterators.get() };
     Ok(iterators.insert(iter).id())
 }
@@ -1262,8 +1284,8 @@ where
     let iter_id = PrefixIteratorId::new(iter_id);
     if let Some(iter) = iterators.get_mut(iter_id) {
         let gas_meter = unsafe { env.ctx.gas_meter.get() };
-        if let Some((key, val)) =
-            vp_host_fns::iter_pre_next::<DB>(gas_meter, iter)?
+        if let Some((key, val, _gas)) = iter.next()
+        // vp_host_fns::iter_pre_next::<DB>(gas_meter, iter)?
         {
             let key_val = KeyVal { key, val }
                 .try_to_vec()
@@ -1304,8 +1326,8 @@ where
     if let Some(iter) = iterators.get_mut(iter_id) {
         let gas_meter = unsafe { env.ctx.gas_meter.get() };
         let write_log = unsafe { env.ctx.write_log.get() };
-        if let Some((key, val)) =
-            vp_host_fns::iter_post_next::<DB>(gas_meter, write_log, iter)?
+        if let Some((key, val, _gas)) = iter.next()
+        // vp_host_fns::iter_post_next::<DB>(gas_meter, write_log, iter)?
         {
             let key_val = KeyVal { key, val }
                 .try_to_vec()
