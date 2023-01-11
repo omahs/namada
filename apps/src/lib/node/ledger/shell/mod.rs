@@ -615,7 +615,7 @@ where
             // Replay protection check
             let inner_hash_key =
                 replay_protection::get_tx_hash_key(&wrapper.tx_hash);
-            match self.storage.has_key(&inner_hash_key) {
+            match self.wl_storage.storage.has_key(&inner_hash_key) {
                 Ok((found, _)) => {
                     if found {
                         response.code = 4;
@@ -633,7 +633,7 @@ where
             let wrapper_hash_key = replay_protection::get_tx_hash_key(
                 &transaction::unsigned_hash_tx(tx_bytes),
             );
-            match self.storage.has_key(&wrapper_hash_key) {
+            match self.wl_storage.storage.has_key(&wrapper_hash_key) {
                 Ok((found, _)) => {
                     if found {
                         response.code = 5;
@@ -1149,7 +1149,7 @@ mod test_mempool_validate {
         let mut wrapper = WrapperTx::new(
             Fee {
                 amount: 100.into(),
-                token: shell.storage.native_token.clone(),
+                token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
             Epoch(0),
@@ -1202,7 +1202,7 @@ mod test_mempool_validate {
         let mut wrapper = WrapperTx::new(
             Fee {
                 amount: 100.into(),
-                token: shell.storage.native_token.clone(),
+                token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
             Epoch(0),
@@ -1294,7 +1294,7 @@ mod test_mempool_validate {
         let wrapper = WrapperTx::new(
             Fee {
                 amount: 100.into(),
-                token: shell.storage.native_token.clone(),
+                token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
             Epoch(0),
@@ -1318,6 +1318,7 @@ mod test_mempool_validate {
         let wrapper_hash_key =
             replay_protection::get_tx_hash_key(&wrapper_hash);
         shell
+            .wl_storage
             .storage
             .write(&wrapper_hash_key, &wrapper_hash)
             .expect("Test failed");
@@ -1339,6 +1340,7 @@ mod test_mempool_validate {
         let inner_hash_key =
             replay_protection::get_tx_hash_key(&tx_type.tx_hash);
         shell
+            .wl_storage
             .storage
             .write(&inner_hash_key, &tx_type.tx_hash)
             .expect("Test failed");
