@@ -373,7 +373,7 @@ where
         &self,
         storage: &S,
         epoch: Epoch,
-        params: &PosParams,
+        _params: &PosParams,
     ) -> storage_api::Result<Option<Data>>
     where
         S: StorageRead,
