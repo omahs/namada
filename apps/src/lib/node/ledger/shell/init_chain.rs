@@ -333,7 +333,7 @@ where
         // PoS system depends on epoch being initialized
         let (current_epoch, _gas) = self.wl_storage.storage.get_current_epoch();
         pos::init_genesis_storage_new(
-            &mut self.storage,
+            &mut self.wl_storage,
             &genesis.pos_params,
             genesis
                 .validators

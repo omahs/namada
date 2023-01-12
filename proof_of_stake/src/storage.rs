@@ -1,7 +1,7 @@
 //! Proof-of-Stake storage keys and storage integration via [`PosBase`] trait.
 
 use namada_core::ledger::storage::types::{decode, encode};
-use namada_core::ledger::storage::{self, Storage, StorageHasher, WlStorage};
+use namada_core::ledger::storage::{self, StorageHasher, WlStorage};
 use namada_core::types::address::Address;
 use namada_core::types::storage::{DbKeySeg, Key, KeySeg};
 use namada_core::types::{key, token};
@@ -505,7 +505,8 @@ where
     }
 
     fn read_num_active_validators(&self) -> u64 {
-        let (value, _gas) = self.read(&num_active_validators_key()).unwrap();
+        let (value, _gas) =
+            self.storage.read(&num_active_validators_key()).unwrap();
         decode(value.unwrap()).unwrap()
     }
 
@@ -606,7 +607,8 @@ where
     }
 
     fn write_num_active_validators(&mut self, value: &u64) {
-        self.write(&num_active_validators_key(), encode(value))
+        self.storage
+            .write(&num_active_validators_key(), encode(value))
             .unwrap();
     }
 
