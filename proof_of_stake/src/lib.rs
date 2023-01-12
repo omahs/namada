@@ -1938,7 +1938,7 @@ where
 /// Read PoS parameters
 pub fn read_pos_params<S>(storage: &S) -> storage_api::Result<PosParams>
 where
-    S: for<'iter> StorageRead<'iter>,
+    S: StorageRead,
 {
     let value = storage.read_bytes(&params_key())?.unwrap();
     Ok(decode(value).unwrap())
@@ -1976,7 +1976,7 @@ pub fn read_validator_max_commission_rate_change<S>(
     validator: &Address,
 ) -> storage_api::Result<Decimal>
 where
-    S: for<'iter> StorageRead<'iter>,
+    S: StorageRead,
 {
     let key = validator_max_commission_rate_change_key(validator);
     let value = storage.read_bytes(&key)?.unwrap();
@@ -1990,7 +1990,7 @@ pub fn write_validator_max_commission_rate_change<S>(
     change: Decimal,
 ) -> storage_api::Result<()>
 where
-    S: for<'iter> StorageRead<'iter> + StorageWrite,
+    S: StorageRead + StorageWrite,
 {
     let key = validator_max_commission_rate_change_key(validator);
     storage.write(&key, change)
@@ -1999,7 +1999,7 @@ where
 /// Read number of active PoS validators.
 pub fn read_num_active_validators<S>(storage: &S) -> storage_api::Result<u64>
 where
-    S: for<'iter> StorageRead<'iter>,
+    S: StorageRead,
 {
     let value = storage.read_bytes(&num_active_validators_key())?.unwrap();
     Ok(decode(value).unwrap())
@@ -2011,7 +2011,7 @@ pub fn write_num_active_validators<S>(
     new_num: u64,
 ) -> storage_api::Result<()>
 where
-    S: for<'iter> StorageRead<'iter> + StorageWrite,
+    S: StorageRead + StorageWrite,
 {
     let key = num_active_validators_key();
     storage.write(&key, new_num)
@@ -2089,7 +2089,7 @@ pub fn read_active_validator_set_addresses<S>(
     epoch: namada_core::types::storage::Epoch,
 ) -> storage_api::Result<HashSet<Address>>
 where
-    S: for<'iter> StorageRead<'iter>,
+    S: StorageRead,
 {
     let mut addresses: HashSet<Address> = HashSet::new();
 
@@ -2118,7 +2118,7 @@ pub fn read_inactive_validator_set_addresses<S>(
     epoch: namada_core::types::storage::Epoch,
 ) -> storage_api::Result<HashSet<Address>>
 where
-    S: for<'iter> StorageRead<'iter>,
+    S: StorageRead,
 {
     let mut addresses: HashSet<Address> = HashSet::new();
 
@@ -2146,7 +2146,7 @@ pub fn read_all_validator_addresses<S>(
     epoch: namada_core::types::storage::Epoch,
 ) -> storage_api::Result<HashSet<Address>>
 where
-    S: for<'iter> StorageRead<'iter>,
+    S: StorageRead,
 {
     let mut addresses = read_active_validator_set_addresses(
         storage,
@@ -2509,7 +2509,7 @@ fn find_lowest_position<S>(
     storage: &S,
 ) -> storage_api::Result<Option<Position>>
 where
-    S: for<'iter> StorageRead<'iter>,
+    S: StorageRead,
 {
     let lowest_position = handle
         .iter(storage)?
@@ -2544,7 +2544,7 @@ fn get_max_inactive_validator_amount<S>(
     storage: &S,
 ) -> storage_api::Result<token::Amount>
 where
-    S: for<'iter> StorageRead<'iter>,
+    S: StorageRead,
 {
     Ok(handle
         .iter(storage)?
@@ -2588,7 +2588,7 @@ pub fn unbond_tokens_new<S>(
     current_epoch: Epoch,
 ) -> storage_api::Result<()>
 where
-    S: for<'iter> StorageRead<'iter> + StorageWrite,
+    S: StorageRead + StorageWrite,
 {
     let params = read_pos_params(storage)?;
     if let Some(source) = source {
@@ -2726,7 +2726,7 @@ fn update_unbond<S>(
     amount: token::Amount,
 ) -> storage_api::Result<()>
 where
-    S: for<'iter> StorageRead<'iter> + StorageWrite,
+    S: StorageRead + StorageWrite,
 {
     let current = handle
         .at(withdraw_epoch)
@@ -2753,7 +2753,7 @@ pub fn become_validator_new<S>(
     max_commission_rate_change: Decimal,
 ) -> storage_api::Result<()>
 where
-    S: for<'iter> StorageRead<'iter> + StorageWrite,
+    S: StorageRead + StorageWrite,
 {
     // Non-epoched validator data
     write_validator_address_raw_hash(storage, address, consensus_key)?;
@@ -2824,7 +2824,7 @@ pub fn withdraw_tokens_new<S>(
     current_epoch: Epoch,
 ) -> storage_api::Result<token::Amount>
 where
-    S: for<'iter> StorageRead<'iter> + StorageWrite,
+    S: StorageRead + StorageWrite,
 {
     let params = read_pos_params(storage)?;
     let source = source.unwrap_or(validator);
@@ -2906,7 +2906,7 @@ pub fn change_validator_commission_rate_new<S>(
     current_epoch: Epoch,
 ) -> storage_api::Result<()>
 where
-    S: for<'iter> StorageRead<'iter> + StorageWrite,
+    S: StorageRead + StorageWrite,
 {
     if new_rate < Decimal::ZERO {
         return Err(CommissionRateChangeError::NegativeRate(
@@ -2926,9 +2926,7 @@ where
         .get(storage, pipeline_epoch, &params)?
         .expect("Could not find a rate in given epoch");
     if new_rate == rate_at_pipeline {
-        return Err(
-            CommissionRateChangeError::ChangeIsZero(validator.clone()).into()
-        );
+        return Ok(());
     }
     let rate_before_pipeline = commission_handle
         .get(storage, pipeline_epoch - 1, &params)?
@@ -2956,7 +2954,7 @@ pub fn slash_new<S>(
     validator: &Address,
 ) -> storage_api::Result<()>
 where
-    S: for<'iter> StorageRead<'iter> + StorageWrite,
+    S: StorageRead + StorageWrite,
 {
     let rate = slash_type.get_slash_rate(params);
     let slash = SlashNew {
@@ -3017,7 +3015,7 @@ pub fn transfer_tokens<S>(
     src: &Address,
     dest: &Address,
 ) where
-    S: for<'iter> StorageRead<'iter> + StorageWrite,
+    S: StorageRead + StorageWrite,
 {
     let src_key = token::balance_key(token, src);
     let dest_key = token::balance_key(token, dest);
@@ -3061,7 +3059,7 @@ pub fn credit_tokens_new<S>(
     target: &Address,
     amount: token::Amount,
 ) where
-    S: for<'iter> StorageRead<'iter> + StorageWrite,
+    S: StorageRead + StorageWrite,
 {
     let key = token::balance_key(token, target);
     let new_balance = match storage
@@ -3087,7 +3085,7 @@ pub fn bond_amount_new<S>(
     epoch: Epoch,
 ) -> storage_api::Result<token::Amount>
 where
-    S: for<'iter> StorageRead<'iter>,
+    S: StorageRead,
 {
     // TODO: review this logic carefully, do cubic slashing, apply rewards
     let slashes = validator_slashes_handle(&bond_id.validator);
