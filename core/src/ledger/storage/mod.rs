@@ -31,6 +31,7 @@ pub use traits::{Sha256Hasher, StorageHasher};
 
 use crate::ledger::gas::MIN_STORAGE_GAS;
 use crate::ledger::parameters::{self, EpochDuration, Parameters};
+use crate::ledger::inflation::mint_tokens;
 use crate::ledger::storage::merkle_tree::{
     Error as MerkleTreeError, MerkleRoot,
 };
@@ -896,20 +897,9 @@ where
 
         // Update the MASP's transparent reward token balance to ensure that it
         // is sufficiently backed to redeem rewards
-        let reward_key = token::balance_key(&nam(), &masp_addr);
-        if let Ok((Some(addr_bal), _)) = self.read(&reward_key) {
-            // If there is already a balance, then add to it
-            let addr_bal: token::Amount =
-                types::decode(addr_bal).expect("invalid balance");
-            let new_bal = types::encode(&(addr_bal + total_reward));
-            self.write(&reward_key, new_bal)
-                .expect("unable to update MASP transparent balance");
-        } else {
-            // Otherwise the rewards form the entirity of the reward token
-            // balance
-            self.write(&reward_key, types::encode(&total_reward))
-                .expect("unable to update MASP transparent balance");
-        }
+        mint_tokens(self, &nam(), &masp_addr, total_reward)
+            .expect("unable to update MASP transparent balance");
+
         // Try to distribute Merkle tree construction as evenly as possible
         // across multiple cores
         // Merkle trees must have exactly 2^n leaves to be mergeable
