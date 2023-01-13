@@ -826,7 +826,7 @@ mod test_finalize_block {
         let tx_code = std::fs::read(wasm_path)
             .expect("Expected a file at given code path");
         let raw_tx = Tx::new(
-            tx_code.clone(),
+            tx_code,
             Some("Encrypted transaction data".as_bytes().to_owned()),
         );
         let wrapper_tx = WrapperTx::new(
@@ -854,7 +854,7 @@ mod test_finalize_block {
 
         let processed_tx = ProcessedTx {
             tx: Tx::from(TxType::Decrypted(DecryptedTx::Decrypted {
-                tx: raw_tx.clone(),
+                tx: raw_tx,
                 #[cfg(not(feature = "mainnet"))]
                 has_valid_pow: false,
             }))
@@ -873,7 +873,7 @@ mod test_finalize_block {
             })
             .expect("Test failed")[0];
 
-        // FIXME: @grarco, uncomment when proper gas metering is in place
+        // FIXME: uncomment when proper gas metering is in place
         // // Check inner tx hash has been removed from storage
         // assert_eq!(event.event_type.to_string(), String::from("applied"));
         // let code = event.attributes.get("code").expect("Test
