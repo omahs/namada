@@ -424,7 +424,7 @@ where
         // first entry in iteration then None afterward). Figure
         // this out!!!
 
-        // println!("\nGET_SUM AT EPOCH {}", epoch.clone());
+        println!("GET_SUM AT EPOCH {}", epoch.clone());
         let last_update = self.get_last_update(storage)?;
         match last_update {
             None => Ok(None),
@@ -441,7 +441,8 @@ where
                 // drop(it);
 
                 let future_most_epoch =
-                    last_update + FutureEpochs::value(params);
+                    dbg!(last_update) + dbg!(FutureEpochs::value(params));
+                dbg!(future_most_epoch);
                 // Epoch can be a lot greater than the epoch where
                 // a value is recorded, we check the upper bound
                 // epoch of the LazyMap data
@@ -474,7 +475,10 @@ where
                 // THIS IS THE HACKY METHOD UNTIL I FIGURE OUT WTF GOING ON WITH
                 // THE ITER
                 let start_epoch = Self::sub_past_epochs(last_update);
+                println!("GETTING SUM OF DELTAS");
                 for ep in (start_epoch.0)..=(epoch.0) {
+                    println!("epoch {}", ep);
+
                     if let Some(val) = data_handler.get(storage, &Epoch(ep))? {
                         if sum.is_none() {
                             sum = Some(val);
@@ -482,6 +486,7 @@ where
                             sum = sum.map(|cur_sum| cur_sum + val);
                         }
                     }
+                    dbg!(&sum);
                 }
                 Ok(sum)
             }
@@ -677,6 +682,29 @@ impl EpochOffset for OffsetPipelinePlusUnbondingLen {
     }
 }
 
+/// Offset at max value for a u64.
+#[derive(
+    Debug,
+    Clone,
+    BorshDeserialize,
+    BorshSerialize,
+    BorshSchema,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+)]
+pub struct OffsetReallyLarge;
+impl EpochOffset for OffsetReallyLarge {
+    fn value(params: &PosParams) -> u64 {
+        10000_u64
+    }
+
+    fn dyn_offset() -> DynEpochOffset {
+        DynEpochOffset::Large
+    }
+}
+
 /// Offset length dynamic choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DynEpochOffset {
@@ -688,6 +716,8 @@ pub enum DynEpochOffset {
     UnbondingLen,
     /// Offset at pipeline + unbonding length.
     PipelinePlusUnbondingLen,
+    /// Large (u64) offset
+    Large,
 }
 
 /// Which offset should be used to set data. The value is read from

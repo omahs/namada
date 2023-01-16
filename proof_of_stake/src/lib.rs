@@ -24,6 +24,7 @@ use core::fmt::Debug;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::num::TryFromIntError;
+use std::ops::Mul;
 
 use epoched::{
     DynEpochOffset, EpochOffset, Epoched, EpochedDelta, OffsetPipelineLen,
@@ -35,7 +36,9 @@ use namada_core::ledger::storage_api::collections::LazyCollection;
 use namada_core::ledger::storage_api::{
     self, OptionExt, StorageRead, StorageWrite,
 };
-use namada_core::types::address::{self, Address, InternalAddress};
+use namada_core::types::address::{
+    self, Address, InternalAddress, POS_SLASH_POOL,
+};
 use namada_core::types::key::{common, tm_consensus_key_raw_hash};
 pub use namada_core::types::storage::Epoch;
 use namada_core::types::token;
@@ -1900,11 +1903,11 @@ where
             delta,
             current_epoch,
         )?;
-        bond_handle(&address, &address, false).init_at_genesis(
-            storage,
-            delta,
-            current_epoch,
-        )?;
+        // bond_handle(&address, &address, false).init_at_genesis(
+        //     storage,
+        //     delta,
+        //     current_epoch,
+        // )?;
         bond_handle(&address, &address, true).init_at_genesis(
             storage,
             delta,
@@ -1938,12 +1941,14 @@ where
         total_bonded,
     );
     // Copy the genesis validator set into the pipeline epoch as well
-    copy_validator_sets(
-        storage,
-        current_epoch + params.pipeline_len,
-        &active_validator_set_handle(),
-        &inactive_validator_set_handle(),
-    )?;
+    for epoch in (current_epoch.next()).iter_range(params.pipeline_len) {
+        copy_validator_sets(
+            storage,
+            epoch,
+            &active_validator_set_handle(),
+            &inactive_validator_set_handle(),
+        )?;
+    }
 
     println!("FINISHED GENESIS\n");
 
@@ -2076,6 +2081,7 @@ pub fn read_validator_stake<S>(
 where
     S: StorageRead,
 {
+    println!("\nREAD VALIDATOR STAKE AT EPOCH {}", epoch);
     let handle = validator_deltas_handle(validator);
     let amount = handle
         .get_sum(storage, epoch, params)?
@@ -2334,7 +2340,7 @@ where
 
     let validator_state_handle = validator_state_handle(validator);
     let source = source.unwrap_or(validator);
-    let bond_amount_handle = bond_handle(source, validator, false);
+    // let bond_amount_handle = bond_handle(source, validator, false);
     let bond_remain_handle = bond_handle(source, validator, true);
 
     // Check that validator is not inactive at anywhere between the current
@@ -2351,22 +2357,22 @@ where
     let offset = params.pipeline_len;
     // TODO: ensure that this method of checking if the bond exists works
 
-    dbg!(bond_amount_handle.get_last_update(storage).unwrap());
+    // dbg!(bond_amount_handle.get_last_update(storage).unwrap());
 
-    if !bond_amount_handle.get_data_handler().is_empty(storage)? {
+    if !bond_remain_handle.get_data_handler().is_empty(storage)? {
         println!("BOND EXISTS TO BEGIN WITH\n");
-        let cur_amount = bond_amount_handle
-            .get_delta_val(storage, current_epoch + offset, &params)?
-            .unwrap_or_default();
+        // let cur_amount = bond_amount_handle
+        //     .get_delta_val(storage, current_epoch + offset, &params)?
+        //     .unwrap_or_default();
         let cur_remain = bond_remain_handle
             .get_delta_val(storage, current_epoch + offset, &params)?
             .unwrap_or_default();
-        bond_amount_handle.set(
-            storage,
-            cur_amount + amount,
-            current_epoch,
-            offset,
-        )?;
+        // bond_amount_handle.set(
+        //     storage,
+        //     cur_amount + amount,
+        //     current_epoch,
+        //     offset,
+        // )?;
         bond_remain_handle.set(
             storage,
             cur_remain + amount,
@@ -2376,7 +2382,7 @@ where
     } else {
         println!("BOND DOESNT EXIST YET\n");
 
-        bond_amount_handle.init(storage, amount, current_epoch, offset)?;
+        // bond_amount_handle.init(storage, amount, current_epoch, offset)?;
         bond_remain_handle.init(storage, amount, current_epoch, offset)?;
     }
 
@@ -2465,6 +2471,20 @@ where
 
     let tokens_pre = read_validator_stake(storage, params, validator, epoch)?
         .unwrap_or_default();
+
+    active_val_handle.at(&(tokens_pre.mul(2_u64))).insert(
+        storage,
+        Position(epoch.0),
+        ADDRESS,
+    )?;
+    active_val_handle
+        .at(
+            &(read_validator_stake(storage, params, validator, epoch.next())?
+                .unwrap_or_default())
+            .mul(2_u64),
+        )
+        .insert(storage, Position(epoch.0 + 1), POS_SLASH_POOL)?;
+
     let tokens_post = tokens_pre.change() + token_change;
     // TODO: handle overflow or negative vals perhaps with TryFrom
     let tokens_post = token::Amount::from_change(tokens_post);
@@ -2497,7 +2517,8 @@ where
             &position,
             params,
         )?;
-        debug_assert!(val_address.is_some());
+        // debug_assert!(val_address.is_some());
+        assert!(val_address.is_some());
 
         active_vals_pre.remove(storage, &position)?;
 
@@ -2675,7 +2696,8 @@ where
                 ) = val?;
                 inactive_in_mem.insert((stake, position), address);
             }
-
+            dbg!(&search_epoch);
+            dbg!(&active_in_mem);
 
             for ((val_stake, val_position), val_address) in
                 active_in_mem.into_iter()
@@ -2840,6 +2862,7 @@ pub fn unbond_tokens_new<S>(
 where
     S: StorageRead + StorageWrite,
 {
+    println!("UNBONDING TOKEN AMOUNT {}\n", amount);
     let params = read_pos_params(storage)?;
     if let Some(source) = source {
         if source != validator
@@ -3402,6 +3425,8 @@ pub fn validator_set_update_tendermint<S>(
         None
     };
 
+    println!("\nSTART");
+
     let active_validators = cur_active_validators
         .iter(storage)
         .unwrap()
@@ -3413,6 +3438,12 @@ pub fn validator_set_update_tendermint<S>(
                 },
                 address,
             ) = validator.unwrap();
+
+            println!(
+                "ACTIVE VALIDATOR ADDRESS {}, CUR_STAKE {}\n",
+                address.clone(),
+                cur_stake
+            );
 
             // Check if the validator was active in the previous epoch with the
             // same stake
@@ -3445,19 +3476,19 @@ pub fn validator_set_update_tendermint<S>(
                 }
 
                 // Method 2
-                let prev_position = validator_set_positions_handle()
-                    .at(&prev_epoch)
-                    .get(storage, &address)
-                    .unwrap();
-                if prev_position.is_some() {
-                    let prev_address = prev_active_validators
-                        .at(&cur_stake)
-                        .get(storage, &prev_position.unwrap())
-                        .unwrap();
-                    if prev_address == Some(address.clone()) {
-                        return None;
-                    }
-                }
+                // let prev_position = validator_set_positions_handle()
+                //     .at(&prev_epoch)
+                //     .get(storage, &address)
+                //     .unwrap();
+                // if prev_position.is_some() {
+                //     let prev_address = prev_active_validators
+                //         .at(&cur_stake)
+                //         .get(storage, &prev_position.unwrap())
+                //         .unwrap();
+                //     if prev_address == Some(address.clone()) {
+                //         return None;
+                //     }
+                // }
                 // TODO: remove one of the above methods
 
                 // TODO: this will be deprecated, but not sure if it is even
@@ -3475,6 +3506,7 @@ pub fn validator_set_update_tendermint<S>(
                     }
                 }
             }
+            println!("\nMAKING AN ACTIVE VALIDATOR CHANGE");
             let consensus_key = validator_consensus_key_handle(&address)
                 .get(storage, current_epoch, params)
                 .unwrap()
@@ -3498,6 +3530,13 @@ pub fn validator_set_update_tendermint<S>(
                 address,
             ) = validator.unwrap();
             let cur_stake = token::Amount::from(cur_stake);
+
+            println!(
+                "INACTIVE VALIDATOR ADDRESS {}, STAKE {}\n",
+                address.clone(),
+                cur_stake
+            );
+
             let prev_inactive_vals = inactive_validator_set_handle()
                 .at(&previous_epoch.clone().unwrap());
             if previous_epoch.is_some()

@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use namada_core::ledger::storage_api::OptionExt;
 use namada_proof_of_stake::{self, PosReadOnly};
 
 use crate::ledger::pos::{self, BondId};
@@ -30,6 +31,10 @@ router! {POS,
 
     ( "bond_amount" / [owner: Address] / [validator: Address] / [epoch: opt Epoch] )
     -> token::Amount = bond_amount,
+
+    ( "bond_remaining" / [source: Address] / [validator: Address] / [epoch: opt Epoch] )
+    -> token::Amount = bond_remaining_new,
+
 }
 
 // Handlers that implement the functions via `trait StorageRead`:
@@ -99,6 +104,27 @@ where
     ctx.wl_storage.total_stake(epoch)
 }
 
+/// TODO: new bond thing
+fn bond_remaining_new<D, H>(
+    ctx: RequestCtx<'_, D, H>,
+    source: Address,
+    validator: Address,
+    epoch: Option<Epoch>,
+) -> storage_api::Result<token::Amount>
+where
+    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+    H: 'static + StorageHasher + Sync,
+{
+    let epoch = dbg!(epoch.unwrap_or(ctx.wl_storage.storage.last_epoch));
+    let params = namada_proof_of_stake::read_pos_params(ctx.wl_storage)?;
+
+    let handle = namada_proof_of_stake::bond_handle(&source, &validator, true);
+    handle
+        .get_sum(ctx.wl_storage, epoch, &params)?
+        .map(token::Amount::from_change)
+        .ok_or_err_msg("Cannot find bond")
+}
+
 /// Get the total bond amount for the given bond ID (this may be delegation or
 /// self-bond when `owner == validator`) at the given epoch, or the current
 /// epoch when `None`.
@@ -120,7 +146,6 @@ where
     };
     ctx.wl_storage.bond_amount(&bond_id, epoch)
 }
-
 /// Find all the validator addresses to whom the given `owner` address has
 /// some delegation in any epoch
 fn delegations<D, H>(

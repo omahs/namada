@@ -93,6 +93,7 @@ impl Ctx {
         amount: token::Amount,
     ) -> TxResult {
         let current_epoch = self.get_block_epoch()?;
+        println!("UNBONDING IN EPOCH {}\n", current_epoch);
         unbond_tokens_new(
             self,
             source,

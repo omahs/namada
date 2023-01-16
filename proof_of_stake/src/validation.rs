@@ -120,8 +120,8 @@ pub enum Error {
     ValidatorSetNotUpdated,
     #[error("Invalid voting power changes")]
     InvalidVotingPowerChanges,
-    #[error("Unexpectedly missing total voting power")]
-    MissingTotalVotingPower,
+    #[error("Unexpectedly missing total deltas")]
+    MissingTotalDeltas,
     #[error("Total voting power should be updated when voting powers change")]
     TotalVotingPowerNotUpdated,
     #[error("Invalid address raw hash, got {0}, expected {1}")]
@@ -273,6 +273,8 @@ pub fn validate(
         bonded_stake_by_epoch,
         new_validators,
     } = Validate::accumulate_changes(changes, params, &constants, &mut errors);
+
+    // TODO: review if all of this should be changed for PoS new storage
 
     // Check total deltas against bonds
     for (validator, total_delta) in total_deltas.iter() {
@@ -1675,7 +1677,7 @@ impl Validate {
                     }
                 }
             }
-            _ => errors.push(Error::MissingTotalVotingPower),
+            _ => errors.push(Error::MissingTotalDeltas),
         }
     }
 

@@ -1,9 +1,10 @@
 //! Proof-of-Stake storage keys and storage integration via [`PosBase`] trait.
 
+use borsh::BorshDeserialize;
 use namada_core::ledger::storage::types::{decode, encode};
 use namada_core::ledger::storage::{self, StorageHasher, WlStorage};
 use namada_core::types::address::Address;
-use namada_core::types::storage::{DbKeySeg, Key, KeySeg};
+use namada_core::types::storage::{DbKeySeg, Epoch, Key, KeySeg};
 use namada_core::types::{key, token};
 use rust_decimal::Decimal;
 
@@ -33,6 +34,9 @@ const NUM_ACTIVE_VALIDATORS_STORAGE_KEY: &str = "num_active";
 const INACTIVE_VALIDATOR_SET_STORAGE_KEY: &str = "inactive";
 const TOTAL_DELTAS_STORAGE_KEY: &str = "total_deltas_NEW";
 const VALIDATOR_SET_POSITIONS_KEY: &str = "validator_set_positions_NEW";
+
+const lazy_map_str: &str = "lazy_map";
+const data_str: &str = "data";
 
 /// Is the given key a PoS storage key?
 pub fn is_pos_key(key: &Key) -> bool {
@@ -205,9 +209,14 @@ pub fn is_validator_deltas_key(key: &Key) -> Option<&Address> {
             DbKeySeg::StringSeg(prefix),
             DbKeySeg::AddressSeg(validator),
             DbKeySeg::StringSeg(key),
+            DbKeySeg::StringSeg(lazy_map),
+            DbKeySeg::StringSeg(data),
+            DbKeySeg::StringSeg(_epoch),
         ] if addr == &ADDRESS
             && prefix == VALIDATOR_STORAGE_PREFIX
-            && key == VALIDATOR_DELTAS_STORAGE_KEY =>
+            && key == VALIDATOR_DELTAS_STORAGE_KEY
+            && lazy_map == lazy_map_str
+            && data == data_str =>
         {
             Some(validator)
         }
@@ -366,6 +375,16 @@ pub fn inactive_validator_set_key() -> Key {
         .expect("Cannot obtain a storage key")
 }
 
+/// Is storage key for the active validator set?
+pub fn is_active_validator_set_key(key: &Key) -> bool {
+    matches!(&key.segments[..], [DbKeySeg::AddressSeg(addr), DbKeySeg::StringSeg(key), DbKeySeg::StringSeg(set_type), DbKeySeg::StringSeg(lazy_map), DbKeySeg::StringSeg(data), DbKeySeg::StringSeg(_epoch), DbKeySeg::StringSeg(_), DbKeySeg::StringSeg(_amount), DbKeySeg::StringSeg(_), DbKeySeg::StringSeg(_position)] if addr == &ADDRESS && key == VALIDATOR_SET_STORAGE_KEY && set_type == ACTIVE_VALIDATOR_SET_STORAGE_KEY && lazy_map == lazy_map_str && data == data_str)
+}
+
+/// Is storage key for the active validator set?
+pub fn is_inactive_validator_set_key(key: &Key) -> bool {
+    matches!(&key.segments[..], [DbKeySeg::AddressSeg(addr), DbKeySeg::StringSeg(key), DbKeySeg::StringSeg(set_type), DbKeySeg::StringSeg(lazy_map), DbKeySeg::StringSeg(data), DbKeySeg::StringSeg(_epoch), DbKeySeg::StringSeg(_), DbKeySeg::StringSeg(_amount), DbKeySeg::StringSeg(_), DbKeySeg::StringSeg(_position)] if addr == &ADDRESS && key == VALIDATOR_SET_STORAGE_KEY && set_type == INACTIVE_VALIDATOR_SET_STORAGE_KEY && lazy_map == lazy_map_str && data == data_str)
+}
+
 /// Is storage key for a validator set?
 pub fn is_validator_set_key(key: &Key) -> bool {
     matches!(&key.segments[..], [DbKeySeg::AddressSeg(addr), DbKeySeg::StringSeg(key)] if addr == &ADDRESS && key == VALIDATOR_SET_STORAGE_KEY)
@@ -379,10 +398,23 @@ pub fn total_deltas_key() -> Key {
 }
 
 /// Is storage key for total deltas of all validators?
-pub fn is_total_deltas_key(key: &Key) -> bool {
-    matches!(&key.segments[..],
-                [DbKeySeg::AddressSeg(addr), DbKeySeg::StringSeg(key)]
-                    if addr == &ADDRESS && key == TOTAL_DELTAS_STORAGE_KEY)
+pub fn is_total_deltas_key(key: &Key) -> Option<&String> {
+    match &key.segments[..] {
+        [
+            DbKeySeg::AddressSeg(addr),
+            DbKeySeg::StringSeg(key),
+            DbKeySeg::StringSeg(lazy_map),
+            DbKeySeg::StringSeg(data),
+            DbKeySeg::StringSeg(epoch),
+        ] if addr == &ADDRESS
+            && key == TOTAL_DELTAS_STORAGE_KEY
+            && lazy_map == lazy_map_str
+            && data == data_str =>
+        {
+            Some(epoch)
+        }
+        _ => None,
+    }
 }
 
 /// Get validator address from bond key

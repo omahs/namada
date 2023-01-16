@@ -2393,41 +2393,40 @@ pub async fn submit_unbond(ctx: Context, args: args::Unbond) {
         source: bond_source.clone(),
         validator: validator.clone(),
     };
-    let bond_key = ledger::pos::bond_key(&bond_id);
+    let bond_key = ledger::pos::bond_remaining_key(&bond_id);
     let client = HttpClient::new(args.tx.ledger_address.clone()).unwrap();
-    let bonds = rpc::query_storage_value::<Bonds>(&client, &bond_key).await;
-    match bonds {
-        Some(bonds) => {
-            let mut bond_amount: token::Amount = 0.into();
-            for bond in bonds.iter() {
-                for delta in bond.pos_deltas.values() {
-                    bond_amount += *delta;
-                }
-            }
-            if args.amount > bond_amount {
-                eprintln!(
-                    "The total bonds of the source {} is lower than the \
-                     amount to be unbonded. Amount to unbond is {} and the \
-                     total bonds is {}.",
-                    bond_source, args.amount, bond_amount
-                );
-                if !args.tx.force {
-                    safe_exit(1)
-                }
-            }
-        }
-        None => {
-            eprintln!("No bonds found");
-            if !args.tx.force {
-                safe_exit(1)
-            }
+    // let bonds = rpc::query_storage_value::<Bonds>(&client, &bond_key).await;
+
+    let source = ctx.get(args.source.as_ref().unwrap_or(&args.validator));
+    let validator = ctx.get(&args.validator);
+
+    // let epoch: Option<Epoch> = Some(Epoch(4_u64));
+
+    let epoch = rpc::query_epoch(args::Query {
+        ledger_address: args.tx.ledger_address.clone(),
+    })
+    .await;
+
+    let bond_amount =
+        rpc::query_bond_remaining(&client, &source, &validator, Some(epoch))
+            .await;
+    println!("BOND AMOUNT REMAINING IS {}", bond_amount);
+
+    if args.amount > bond_amount {
+        eprintln!(
+            "The total bonds of the source {} is lower than the amount to be \
+             unbonded. Amount to unbond is {} and the total bonds is {}.",
+            bond_source, args.amount, bond_amount
+        );
+        if !args.tx.force {
+            safe_exit(1)
         }
     }
 
     let data = pos::Unbond {
         validator,
         amount: args.amount,
-        source,
+        source: Some(source),
     };
     let data = data.try_to_vec().expect("Encoding tx data shouldn't fail");
 

@@ -1368,6 +1368,24 @@ pub async fn query_protocol_parameters(
     println!("{:4}Votes per token: {}", "", pos_params.tm_votes_per_token);
 }
 
+pub async fn query_bond_remaining(
+    client: &HttpClient,
+    source: &Address,
+    validator: &Address,
+    epoch: Option<Epoch>,
+) -> token::Amount {
+    // let client = HttpClient::new(args.query.ledger_address).unwrap();
+    // let source = ctx.get(&args.owner.unwrap());
+    // let validator = ctx.get(&args.validator.unwrap());
+
+    unwrap_client_response(
+        RPC.vp()
+            .pos()
+            .bond_remaining_new(client, source, validator, &epoch)
+            .await,
+    )
+}
+
 /// Query PoS bond(s)
 pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
     let epoch = query_epoch(args.query.clone()).await;

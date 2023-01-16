@@ -23,13 +23,17 @@ use rust_decimal::prelude::{Decimal, ToPrimitive};
 use crate::epoched::{
     Epoched, EpochedDelta, OffsetPipelineLen, OffsetUnbondingLen,
 };
+use crate::epoched_new::OffsetReallyLarge;
 use crate::parameters::PosParams;
+
+const U64_MAX: u64 = u64::MAX;
 
 // TODO: add this to the spec
 /// Stored positions of validators in active and inactive validator sets
 pub type ValidatorSetPositionsNew = crate::epoched_new::NestedEpoched<
     LazyMap<Address, Position>,
-    crate::epoched_new::OffsetPipelineLen,
+    // crate::epoched_new::OffsetPipelineLen,
+    crate::epoched_new::OffsetReallyLarge,
 >;
 
 impl ValidatorSetPositionsNew {
@@ -70,13 +74,15 @@ impl ValidatorSetPositionsNew {
 /// Epoched validator's consensus key.
 pub type ValidatorConsensusKeysNew = crate::epoched_new::Epoched<
     common::PublicKey,
-    crate::epoched_new::OffsetPipelineLen,
+    // crate::epoched_new::OffsetPipelineLen,
+    crate::epoched_new::OffsetReallyLarge,
 >;
 
 /// Epoched validator's state.
 pub type ValidatorStatesNew = crate::epoched_new::Epoched<
     ValidatorState,
-    crate::epoched_new::OffsetPipelineLen,
+    // crate::epoched_new::OffsetPipelineLen,
+    crate::epoched_new::OffsetReallyLarge,
 >;
 
 /// A map from a position to an address in a Validator Set
@@ -93,7 +99,8 @@ pub type InactiveValidatorSetNew =
 /// Epoched active validator sets.
 pub type ActiveValidatorSetsNew = crate::epoched_new::NestedEpoched<
     ActiveValidatorSetNew,
-    crate::epoched_new::OffsetPipelineLen,
+    // crate::epoched_new::OffsetPipelineLen,
+    crate::epoched_new::OffsetReallyLarge,
 >;
 
 impl ActiveValidatorSetsNew {
@@ -135,7 +142,8 @@ impl ActiveValidatorSetsNew {
 /// Epoched inactive validator sets.
 pub type InactiveValidatorSetsNew = crate::epoched_new::NestedEpoched<
     InactiveValidatorSetNew,
-    crate::epoched_new::OffsetPipelineLen,
+    // crate::epoched_new::OffsetPipelineLen,
+    crate::epoched_new::OffsetReallyLarge,
 >;
 
 impl InactiveValidatorSetsNew {
@@ -182,33 +190,39 @@ impl InactiveValidatorSetsNew {
 pub type ValidatorDeltasNew = crate::epoched_new::EpochedDelta<
     token::Change,
     // TODO: check the offsets
-    crate::epoched_new::OffsetUnbondingLen,
-    21,
+    // crate::epoched_new::OffsetUnbondingLen,
+    // 21,
+    crate::epoched_new::OffsetReallyLarge,
+    U64_MAX,
 >;
 
 /// Epoched total deltas.
 pub type TotalDeltasNew = crate::epoched_new::EpochedDelta<
     token::Change,
     // TODO: check the offsets
-    crate::epoched_new::OffsetPipelineLen,
-    21,
+    // crate::epoched_new::OffsetPipelineLen,
+    // 21,
+    crate::epoched_new::OffsetReallyLarge,
+    U64_MAX,
 >;
-
-const U64_MAX: u64 = u64::MAX;
 
 /// Epoched validator commission rate
 pub type CommissionRatesNew = crate::epoched_new::Epoched<
     Decimal,
-    crate::epoched_new::OffsetPipelineLen,
-    U64_MAX,
+    // crate::epoched_new::OffsetPipelineLen,
+    crate::epoched_new::OffsetReallyLarge,
 >;
 
 /// Epoched validator's bonds
 pub type BondsNew = crate::epoched_new::EpochedDelta<
     token::Change,
-    crate::epoched_new::OffsetPipelineLen,
-    21,
+    // crate::epoched_new::OffsetPipelineLen,
+    // 21,
+    crate::epoched_new::OffsetReallyLarge,
+    U64_MAX,
 >;
+
+// --------------------------------------------------------------------------------------------
 
 /// Epochs validator's unbonds
 /// TODO: should we make a NestedEpochedDelta for this where outer epoch is end
@@ -364,7 +378,7 @@ pub struct ValidatorSet {
     BorshSchema,
     BorshSerialize,
 )]
-pub struct Position(u64);
+pub struct Position(pub u64);
 
 impl KeySeg for Position {
     fn parse(string: String) -> namada_core::types::storage::Result<Self>
