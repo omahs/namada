@@ -3,7 +3,7 @@
 use namada_core::ledger::governance::{storage, ADDRESS as governance_address};
 use namada_core::types::token::Amount;
 use namada_core::types::transaction::governance::{
-    InitProposalData, VoteProposalData,
+    InitProposalData, ProposalType, VoteProposalData,
 };
 
 use super::*;
@@ -34,7 +34,7 @@ pub fn init_proposal(ctx: &mut Ctx, data: InitProposalData) -> TxResult {
     let grace_epoch_key = storage::get_grace_epoch_key(proposal_id);
     ctx.write(&grace_epoch_key, data.grace_epoch)?;
 
-    if let Some(proposal_code) = data.proposal_code {
+    if let ProposalType::Default(Some(proposal_code)) = data.proposal_type {
         let proposal_code_key = storage::get_proposal_code_key(proposal_id);
         ctx.write_bytes(&proposal_code_key, proposal_code)?;
     }
