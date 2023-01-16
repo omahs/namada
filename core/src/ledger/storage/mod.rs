@@ -26,12 +26,13 @@ use rayon::iter::{
 };
 #[cfg(feature = "wasm-runtime")]
 use rayon::prelude::ParallelSlice;
+use rust_decimal::Decimal;
 use thiserror::Error;
 pub use traits::{Sha256Hasher, StorageHasher};
 
 use crate::ledger::gas::MIN_STORAGE_GAS;
+use crate::ledger::inflation::{mint_tokens, RewardsController, ValsToUpdate};
 use crate::ledger::parameters::{self, EpochDuration, Parameters};
-use crate::ledger::inflation::mint_tokens;
 use crate::ledger::storage::merkle_tree::{
     Error as MerkleTreeError, MerkleRoot,
 };
@@ -804,8 +805,104 @@ where
             .expect("unable to derive asset identifier")
     }
 
+    fn calculate_masp_rewards(
+        &mut self,
+        addr: &Address,
+    ) -> storage_api::Result<(u64, u64)> {
+        let masp_addr = masp();
+        // Query the storage for information
+
+        //// information about the amount of tokens on the chain
+        let total_tokens: token::Amount =
+            StorageRead::read(self, &token::total_supply_key(addr))?.expect("");
+
+        // total staked amount in the Shielded pool
+        let total_token_in_masp: token::Amount =
+            StorageRead::read(self, &token::balance_key(addr, &masp_addr))?
+                .expect("");
+
+        let epochs_per_year: u64 = StorageRead::read(
+            self,
+            &parameters::storage::get_epochs_per_year_key(),
+        )?
+        .expect("");
+
+        //// Values from the last epoch
+        let last_inflation: u64 =
+            StorageRead::read(self, &token::last_inflation(addr))?.expect("");
+
+        let last_locked_ratio: Decimal =
+            StorageRead::read(self, &token::last_locked_ratio(addr))?
+                .expect("");
+
+        //// Parameters for each token
+        let max_reward_rate: Decimal =
+            StorageRead::read(self, &token::parameters::max_reward_rate(addr))?
+                .expect("");
+
+        let kp_gain_nom: Decimal =
+            StorageRead::read(self, &token::parameters::kp_sp_gain(addr))?
+                .expect("");
+
+        let kd_gain_nom: Decimal =
+            StorageRead::read(self, &token::parameters::kd_sp_gain(addr))?
+                .expect("");
+
+        let locked_target_ratio: Decimal = StorageRead::read(
+            self,
+            &token::parameters::locked_token_ratio(addr),
+        )?
+        .expect("");
+
+        // Creating the PD controller for handing out tokens
+        let controller = RewardsController::new(
+            total_token_in_masp,
+            total_tokens,
+            locked_target_ratio,
+            last_locked_ratio,
+            max_reward_rate,
+            token::Amount::from(last_inflation),
+            kp_gain_nom,
+            kd_gain_nom,
+            epochs_per_year,
+        );
+
+        let ValsToUpdate {
+            locked_ratio,
+            inflation,
+        } = RewardsController::run(&controller);
+
+        // Is it fine to write the inflation rate, this is accruate,
+        // but we should make sure the return value's ratio matches
+        // this new inflation rate in 'update_allowed_conversions',
+        // otherwise we will have an inaccurate view of inflation
+        StorageWrite::write(
+            self,
+            &token::last_inflation(addr),
+            inflation.try_to_vec().expect("encode new reward rat"),
+        )
+        .expect("unable to encode new inflation rate (Decimal)");
+
+        StorageWrite::write(
+            self,
+            &token::last_locked_ratio(addr),
+            locked_ratio.try_to_vec().expect("encode new reward rat"),
+        )
+        .expect("unable to encode new locked ratio (Decimal)");
+
+        // to make it conform with the expected output, we need to
+        // move it to a ratio of x/100 to match the masp_rewards
+        // function This may be unneeded, as we could describe it as a
+        // ratio of x/1
+
+        // inflation-per-token = inflation / locked tokens = n/100
+        // ∴ n = (inflation * 100) / locked tokens
+        Ok((inflation * 100 / total_token_in_masp.change() as u64, 100))
+    }
+
     #[cfg(feature = "wasm-runtime")]
-    /// Update the MASP's allowed conversions
+    /// Update the MASP's allowed conversions. Further applies the
+    /// shield pool inflation amount per currency.
     fn update_allowed_conversions(&mut self) -> Result<()> {
         use masp_primitives::ff::PrimeField;
         use masp_primitives::transaction::components::Amount as MaspAmount;
@@ -832,8 +929,11 @@ where
         // Conversions from the previous to current asset for each address
         let mut current_convs = BTreeMap::<Address, AllowedConversion>::new();
         // Reward all tokens according to above reward rates
-        for (addr, reward) in &masp_rewards {
-            // Dispence a transparent reward in parallel to the shielded rewards
+        for addr in masp_rewards.keys() {
+            let reward = self
+                .calculate_masp_rewards(addr)
+                .expect("Calculating the masp rewards should not fail");
+            // Dispense a transparent reward in parallel to the shielded rewards
             let token_key = self.read(&token::balance_key(addr, &masp_addr));
             if let Ok((Some(addr_balance), _)) = token_key {
                 // The reward for each reward.1 units of the current asset is
@@ -842,7 +942,7 @@ where
                     types::decode(addr_balance).expect("invalid balance");
                 // Since floor(a) + floor(b) <= floor(a+b), there will always be
                 // enough rewards to reimburse users
-                total_reward += (addr_bal * *reward).0;
+                total_reward += (addr_bal * reward).0;
             }
             // Provide an allowed conversion from previous timestamp. The
             // negative sign allows each instance of the old asset to be
