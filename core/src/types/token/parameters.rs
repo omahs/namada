@@ -3,6 +3,8 @@
 
 use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
+use serde::{Deserialize, Serialize};
 
 use crate::ledger::storage::{self as ledger_storage, types};
 use crate::types::address::Address;
@@ -20,6 +22,8 @@ use crate::types::storage::{Key, KeySeg};
     BorshSerialize,
     BorshDeserialize,
     BorshSchema,
+    Deserialize,
+    Serialize,
 )]
 pub struct Parameters {
     /// Maximum reward rate
@@ -109,5 +113,16 @@ impl Parameters {
         storage
             .write(&kd_sp_gain(address), types::encode(kd_gain_nom))
             .expect("The nominal derivative gain must be initialized");
+    }
+}
+
+impl Default for Parameters {
+    fn default() -> Self {
+        Self {
+            max_reward_rate: dec!(0.1),
+            kp_gain_nom: dec!(0.1),
+            kd_gain_nom: dec!(0.1),
+            locked_ratio_target_key: dec!(0.6667),
+        }
     }
 }

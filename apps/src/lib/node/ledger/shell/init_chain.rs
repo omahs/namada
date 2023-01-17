@@ -7,6 +7,7 @@ use namada::core::ledger::testnet_pow;
 use namada::ledger::parameters::storage::get_staked_ratio_key;
 use namada::ledger::parameters::Parameters;
 use namada::ledger::pos::{into_tm_voting_power, staking_token_address};
+use namada::ledger::storage::types;
 use namada::types::key::*;
 use namada::types::token::total_supply_key;
 use rust_decimal::Decimal;
@@ -240,8 +241,27 @@ where
             vp_code_path,
             vp_sha256,
             balances,
+            parameters,
+            last_inflation,
+            last_locked_ratio,
         } in genesis.token_accounts
         {
+            // Init token parameters and last inflation and caching rates
+            parameters.init_storage(&address, &mut self.storage);
+            self.storage
+                .write(
+                    &token::last_inflation(&address),
+                    types::encode(&last_inflation),
+                )
+                .unwrap();
+            self.storage
+                .write(
+                    &token::last_locked_ratio(&address),
+                    types::encode(&last_locked_ratio),
+                )
+                .unwrap();
+            // self.storage.write(&token::last_inflation(&address),
+            // last_inflation).unwrap();
             let vp_code =
                 vp_code_cache.get_or_insert_with(vp_code_path.clone(), || {
                     wasm_loader::read_wasm(&self.wasm_dir, &vp_code_path)
