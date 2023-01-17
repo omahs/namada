@@ -1242,10 +1242,13 @@ impl From<MerkleTreeError> for Error {
 /// Helpers for testing components that depend on storage
 #[cfg(any(test, feature = "testing"))]
 pub mod testing {
+    use rust_decimal_macros::dec;
+
     use super::mockdb::MockDB;
     use super::*;
     use crate::ledger::storage::traits::Sha256Hasher;
     use crate::types::address;
+    use crate::types::token::parameters;
     /// Storage with a mock DB for testing
     pub type TestStorage = Storage<MockDB, Sha256Hasher>;
 
@@ -1279,6 +1282,54 @@ pub mod testing {
                 #[cfg(feature = "ferveo-tpke")]
                 tx_queue: TxQueue::default(),
                 native_token: address::nam(),
+            }
+        }
+    }
+
+    impl TestStorage {
+        /// Initializes all tokens in the test storage
+        pub fn initalize_tokens(
+            &mut self,
+            total_supply: token::Amount,
+            total_supply_in_masp: token::Amount,
+        ) {
+            let masp_rewards = address::masp_rewards();
+            let masp_addr = address::masp();
+            for addr in masp_rewards.keys() {
+                parameters::Parameters::init_storage(
+                    &parameters::Parameters::default(),
+                    addr,
+                    self,
+                );
+                let initial_inflation: u64 = 1;
+                let initial_locked_ratio: Decimal = dec!(0.1);
+
+                StorageWrite::write(
+                    self,
+                    &token::last_inflation(addr),
+                    initial_inflation,
+                )
+                .expect("Should not fail to put a test inflation source");
+                StorageWrite::write(
+                    self,
+                    &token::last_locked_ratio(addr),
+                    initial_locked_ratio,
+                )
+                .expect("Should not fail to put a test inflation source");
+
+                self.write(
+                    &token::total_supply_key(addr),
+                    total_supply.try_to_vec().unwrap(),
+                )
+                .expect("Should not fail to put a test total supply");
+                self.write(
+                    &token::balance_key(addr, &masp_addr),
+                    total_supply_in_masp.try_to_vec().unwrap(),
+                )
+                .expect(
+                    "Should not fail to put a test the total supply in the \
+                     MASP",
+                );
             }
         }
     }
@@ -1379,6 +1430,7 @@ mod tests {
             };
             parameters.init_storage(&mut storage);
 
+            storage.initalize_tokens(token::Amount::from(1000), token::Amount::from(500));
             let epoch_before = storage.last_epoch;
             assert_eq!(epoch_before, storage.block.epoch);
 
