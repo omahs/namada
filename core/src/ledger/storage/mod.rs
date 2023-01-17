@@ -814,11 +814,14 @@ where
 
         //// information about the amount of tokens on the chain
         let total_tokens: token::Amount =
-            StorageRead::read(self, &token::total_supply_key(addr))?.expect("");
+            StorageRead::read(self, &token::total_supply_key(addr))
+                .expect("failure to read total tokens")
+                .expect("");
 
         // total staked amount in the Shielded pool
         let total_token_in_masp: token::Amount =
-            StorageRead::read(self, &token::balance_key(addr, &masp_addr))?
+            StorageRead::read(self, &token::balance_key(addr, &masp_addr))
+                .expect("failure to read total token in masp")
                 .expect("");
 
         let epochs_per_year: u64 = StorageRead::read(
@@ -828,30 +831,37 @@ where
         .expect("");
 
         //// Values from the last epoch
-        let last_inflation: u64 =
-            StorageRead::read(self, &token::last_inflation(addr))?.expect("");
-
         let last_locked_ratio: Decimal =
-            StorageRead::read(self, &token::last_locked_ratio(addr))?
+            StorageRead::read(self, &token::last_locked_ratio(addr))
+                .expect("failure to read last inflation")
+                .expect("");
+
+        let last_inflation: u64 =
+            StorageRead::read(self, &token::last_inflation(addr))
+                .expect("failure to read last inflation")
                 .expect("");
 
         //// Parameters for each token
         let max_reward_rate: Decimal =
-            StorageRead::read(self, &token::parameters::max_reward_rate(addr))?
+            StorageRead::read(self, &token::parameters::max_reward_rate(addr))
+                .expect("max reward should properly decode")
                 .expect("");
 
         let kp_gain_nom: Decimal =
-            StorageRead::read(self, &token::parameters::kp_sp_gain(addr))?
+            StorageRead::read(self, &token::parameters::kp_sp_gain(addr))
+                .expect("kp_gain_nom reward should properly decode")
                 .expect("");
 
         let kd_gain_nom: Decimal =
-            StorageRead::read(self, &token::parameters::kd_sp_gain(addr))?
+            StorageRead::read(self, &token::parameters::kd_sp_gain(addr))
+                .expect("kd_gain_nom reward should properly decode")
                 .expect("");
 
         let locked_target_ratio: Decimal = StorageRead::read(
             self,
             &token::parameters::locked_token_ratio(addr),
-        )?
+        )
+        .expect("the locked target ratio should properly decode")
         .expect("");
 
         // Creating the PD controller for handing out tokens
@@ -876,17 +886,13 @@ where
         // but we should make sure the return value's ratio matches
         // this new inflation rate in 'update_allowed_conversions',
         // otherwise we will have an inaccurate view of inflation
-        StorageWrite::write(
-            self,
-            &token::last_inflation(addr),
-            inflation.try_to_vec().expect("encode new reward rat"),
-        )
-        .expect("unable to encode new inflation rate (Decimal)");
+        StorageWrite::write(self, &token::last_inflation(addr), inflation)
+            .expect("unable to encode new inflation rate (Decimal)");
 
         StorageWrite::write(
             self,
             &token::last_locked_ratio(addr),
-            locked_ratio.try_to_vec().expect("encode new reward rat"),
+            locked_ratio,
         )
         .expect("unable to encode new locked ratio (Decimal)");
 
