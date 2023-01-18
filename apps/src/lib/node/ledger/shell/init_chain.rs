@@ -8,6 +8,8 @@ use namada::types::key::*;
 use sha2::{Digest, Sha256};
 
 use super::*;
+use crate::config::genesis::chain::FinalizedTokenConfig;
+use crate::config::genesis::templates::TokenConfig;
 use crate::facade::tendermint_proto::abci;
 use crate::facade::tendermint_proto::crypto::PublicKey as TendermintPublicKey;
 use crate::facade::tendermint_proto::google::protobuf;
@@ -33,15 +35,12 @@ where
                 current_chain_id, init.chain_id
             )));
         }
-        let genesis = genesis::genesis(&self.base_dir, &self.storage.chain_id);
-        let genesis_bytes = genesis.try_to_vec().unwrap();
-        let errors = self.storage.chain_id.validate(genesis_bytes);
-        use itertools::Itertools;
-        assert!(
-            errors.is_empty(),
-            "Chain ID validation failed: {}",
-            errors.into_iter().format(". ")
-        );
+
+        // Read the genesis files
+        let chain_dir = self.base_dir.join(self.storage.chain_id.as_str());
+        let genesis = genesis::chain::Finalized::read_toml_files(&chain_dir)
+            .expect("Missing genesis files");
+        dbg!(genesis);
 
         let ts: protobuf::Timestamp = init.time.expect("Missing genesis time");
         let initial_height = init
@@ -56,50 +55,12 @@ where
         .into();
 
         // Initialize protocol parameters
-        let genesis::Parameters {
-            epoch_duration,
-            max_expected_time_per_block,
-            vp_whitelist,
-            tx_whitelist,
-            implicit_vp_code_path,
-            implicit_vp_sha256,
-            epochs_per_year,
-            pos_gain_p,
-            pos_gain_d,
-            staked_ratio,
-            pos_inflation_amount,
-        } = genesis.parameters;
-        // borrow necessary for release build, annoys clippy on dev build
-        #[allow(clippy::needless_borrow)]
-        let implicit_vp =
-            wasm_loader::read_wasm(&self.wasm_dir, &implicit_vp_code_path)
-                .map_err(Error::ReadingWasm)?;
-        // In dev, we don't check the hash
-        let mut hasher = Sha256::new();
-        hasher.update(&implicit_vp);
-        let vp_code_hash = hasher.finalize();
-        assert_eq!(
-            vp_code_hash.as_slice(),
-            &implicit_vp_sha256,
-            "Invalid implicit account's VP sha256 hash for {}",
-            implicit_vp_code_path
-        );
-        let parameters = Parameters {
-            epoch_duration,
-            max_expected_time_per_block,
-            vp_whitelist,
-            tx_whitelist,
-            implicit_vp,
-            epochs_per_year,
-            pos_gain_p,
-            pos_gain_d,
-            staked_ratio,
-            pos_inflation_amount,
-        };
+        let parameters = genesis.get_chain_parameters(&self.wasm_dir);
         parameters.init_storage(&mut self.storage);
 
         // Initialize governance parameters
-        genesis.gov_params.init_storage(&mut self.storage);
+        let gov_params = genesis.get_gov_params();
+        gov_params.init_storage(&mut self.storage);
 
         // Depends on parameters being initialized
         self.storage
@@ -108,6 +69,53 @@ where
 
         // Loaded VP code cache to avoid loading the same files multiple times
         let mut vp_code_cache: HashMap<String, Vec<u8>> = HashMap::default();
+
+        let lookup_vp =
+            |name| genesis.vps.wasm.get(name).map(|config| &config.filename);
+
+        // Init token accounts
+        for (alias, token) in &genesis.tokens.token {
+            tracing::debug!("Initializing token {alias}");
+            let FinalizedTokenConfig {
+                address,
+                config: TokenConfig { vp },
+            } = token;
+            let vp_filename = lookup_vp(vp).expect("Missing token VP");
+            let vp_code =
+                vp_code_cache.get_or_insert_with(vp_filename.clone(), || {
+                    wasm_loader::read_wasm(&self.wasm_dir, &vp_filename)
+                        .unwrap()
+                });
+
+            self.storage
+                .write(&Key::validity_predicate(address), vp_code)
+                .unwrap();
+        }
+        // Init token balances
+        for (token_alias, balances) in genesis.balances.token {
+            tracing::debug!("Initializing token balances {token_alias}");
+            let token_address = genesis
+                .tokens
+                .token
+                .get(&token_alias)
+                .expect("Token with configured balance not found in genesis.")
+                .address;
+            for (owner_pk, balance) in balances.0 {
+                let owner = Address::from(&owner_pk.raw);
+
+                let pk_storage_key = pk_key(&owner);
+                self.storage
+                    .write(&pk_storage_key, owner_pk.try_to_vec().unwrap())
+                    .unwrap();
+
+                self.storage
+                    .write(
+                        &token::balance_key(&token_address, &owner),
+                        balance.try_to_vec().unwrap(),
+                    )
+                    .unwrap();
+            }
+        }
 
         // Initialize genesis established accounts
         for genesis::EstablishedAccount {
@@ -273,9 +281,10 @@ where
 
         // PoS system depends on epoch being initialized
         let (current_epoch, _gas) = self.storage.get_current_epoch();
+        let pos_params = genesis.get_pos_params();
         pos::init_genesis_storage(
             &mut self.storage,
-            &genesis.pos_params,
+            &pos_params,
             genesis
                 .validators
                 .iter()
@@ -294,7 +303,7 @@ where
             };
             abci_validator.pub_key = Some(pub_key);
             abci_validator.power = into_tm_voting_power(
-                genesis.pos_params.tm_votes_per_token,
+                genesis.parameters.pos_params.tm_votes_per_token,
                 validator.pos_data.tokens,
             );
             response.validators.push(abci_validator);
