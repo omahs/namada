@@ -813,6 +813,7 @@ where
         // Query the storage for information
 
         //// information about the amount of tokens on the chain
+
         let total_tokens: token::Amount =
             StorageRead::read(self, &token::total_supply_key(addr))
                 .expect("failure to read total tokens")
@@ -822,7 +823,8 @@ where
         let total_token_in_masp: token::Amount =
             StorageRead::read(self, &token::balance_key(addr, &masp_addr))
                 .expect("failure to read total token in masp")
-                .expect("");
+                // may not exist, so give it a default
+                .unwrap_or_default();
 
         let epochs_per_year: u64 = StorageRead::read(
             self,
@@ -831,6 +833,7 @@ where
         .expect("");
 
         //// Values from the last epoch
+
         let last_locked_ratio: Decimal =
             StorageRead::read(self, &token::last_locked_ratio(addr))
                 .expect("failure to read last inflation")
@@ -842,6 +845,7 @@ where
                 .expect("");
 
         //// Parameters for each token
+
         let max_reward_rate: Decimal =
             StorageRead::read(self, &token::parameters::max_reward_rate(addr))
                 .expect("max reward should properly decode")
@@ -882,13 +886,6 @@ where
             inflation,
         } = RewardsController::run(&controller);
 
-        // Is it fine to write the inflation rate, this is accruate,
-        // but we should make sure the return value's ratio matches
-        // this new inflation rate in 'update_allowed_conversions',
-        // otherwise we will have an inaccurate view of inflation
-        StorageWrite::write(self, &token::last_inflation(addr), inflation)
-            .expect("unable to encode new inflation rate (Decimal)");
-
         StorageWrite::write(
             self,
             &token::last_locked_ratio(addr),
@@ -901,9 +898,26 @@ where
         // function This may be unneeded, as we could describe it as a
         // ratio of x/1
 
+        // if locked tokens ≠ 0,
         // inflation-per-token = inflation / locked tokens = n/100
         // ∴ n = (inflation * 100) / locked tokens
-        Ok((inflation * 100 / total_token_in_masp.change() as u64, 100))
+        // if locked tokens = 0, then
+        // the inflation should also be 0
+        let total_in: u64 = total_token_in_masp.change() as u64;
+        if 0u64 == total_in {
+            StorageWrite::write(self, &token::last_inflation(addr), 0u64)
+                .expect("unable to encode new inflation rate (u64)");
+            Ok((0u64, 100))
+        } else {
+            // Is it fine to write the inflation rate, this is accurate,
+            // but we should make sure the return value's ratio matches
+            // this new inflation rate in 'update_allowed_conversions',
+            // otherwise we will have an inaccurate view of inflation
+            StorageWrite::write(self, &token::last_inflation(addr), inflation)
+                .expect("unable to encode new inflation rate (Decimal)");
+
+            Ok((inflation * 100 / total_token_in_masp.change() as u64, 100))
+        }
     }
 
     #[cfg(feature = "wasm-runtime")]
