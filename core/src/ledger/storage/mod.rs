@@ -898,6 +898,13 @@ where
         // function This may be unneeded, as we could describe it as a
         // ratio of x/1
 
+        // Is it fine to write the inflation rate, this is accurate,
+        // but we should make sure the return value's ratio matches
+        // this new inflation rate in 'update_allowed_conversions',
+        // otherwise we will have an inaccurate view of inflation
+        StorageWrite::write(self, &token::last_inflation(addr), inflation)
+            .expect("unable to encode new inflation rate (Decimal)");
+
         // if locked tokens ≠ 0,
         // inflation-per-token = inflation / locked tokens = n/100
         // ∴ n = (inflation * 100) / locked tokens
@@ -905,17 +912,8 @@ where
         // the inflation should also be 0
         let total_in: u64 = total_token_in_masp.change() as u64;
         if 0u64 == total_in {
-            StorageWrite::write(self, &token::last_inflation(addr), 0u64)
-                .expect("unable to encode new inflation rate (u64)");
             Ok((0u64, 100))
         } else {
-            // Is it fine to write the inflation rate, this is accurate,
-            // but we should make sure the return value's ratio matches
-            // this new inflation rate in 'update_allowed_conversions',
-            // otherwise we will have an inaccurate view of inflation
-            StorageWrite::write(self, &token::last_inflation(addr), inflation)
-                .expect("unable to encode new inflation rate (Decimal)");
-
             Ok((inflation * 100 / total_token_in_masp.change() as u64, 100))
         }
     }
