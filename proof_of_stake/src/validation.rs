@@ -523,69 +523,70 @@ pub fn validate(
         errors.push(Error::ValidatorSetNotUpdated)
     }
 
-    // Check new validators are initialized with all the required fields
-    if !new_validators.is_empty() {
-        match &validator_set_post {
-            None => errors.push(Error::MissingValidatorSetUpdate),
-            Some(sets) => {
-                let validator_sets = sets.get(pipeline_epoch);
-                for (address, new_validator) in new_validators {
-                    let NewValidator {
-                        has_state,
-                        has_consensus_key,
-                        has_total_deltas,
-                        has_address_raw_hash,
-                        bonded_stake,
-                        has_commission_rate,
-                        has_max_commission_rate_change,
-                    } = &new_validator;
-                    // The new validator must have set all the required fields
-                    if !(*has_state
-                        && *has_total_deltas
-                        && *has_commission_rate
-                        && *has_max_commission_rate_change)
-                    {
-                        errors.push(Error::InvalidNewValidator(
-                            address.clone(),
-                            new_validator.clone(),
-                        ))
-                    }
-                    match (has_address_raw_hash, has_consensus_key) {
-                        (Some(raw_hash), Some(consensus_key)) => {
-                            let expected_raw_hash = consensus_key.tm_raw_hash();
-                            if raw_hash != &expected_raw_hash {
-                                errors.push(Error::InvalidAddressRawHash(
-                                    raw_hash.clone(),
-                                    expected_raw_hash,
-                                ))
-                            }
-                        }
-                        _ => errors.push(Error::InvalidNewValidator(
-                            address.clone(),
-                            new_validator.clone(),
-                        )),
-                    }
-                    let weighted_validator = WeightedValidator {
-                        bonded_stake: *bonded_stake,
-                        address: address.clone(),
-                    };
-                    match validator_sets {
-                        Some(set)
-                            if set.active.contains(&weighted_validator)
-                                || set
-                                    .inactive
-                                    .contains(&weighted_validator) =>
-                        {
-                            continue;
-                        }
-                        _ => errors.push(
-                            Error::NewValidatorMissingInValidatorSet(address),
-                        ),
-                    }
-                }
-            }
-        }
-    }
+    // TODO: this is skipped while migrating to the new lazy validator set
+    //  Check new validators are initialized with all the required fields if
+    // !new_validators.is_empty() {
+    //     match &validator_set_post {
+    //         None => errors.push(Error::MissingValidatorSetUpdate),
+    //         Some(sets) => {
+    //             let validator_sets = sets.get(pipeline_epoch);
+    //             for (address, new_validator) in new_validators {
+    //                 let NewValidator {
+    //                     has_state,
+    //                     has_consensus_key,
+    //                     has_total_deltas,
+    //                     has_address_raw_hash,
+    //                     bonded_stake,
+    //                     has_commission_rate,
+    //                     has_max_commission_rate_change,
+    //                 } = &new_validator;
+    //                 // The new validator must have set all the required
+    // fields                 if !(*has_state
+    //                     && *has_total_deltas
+    //                     && *has_commission_rate
+    //                     && *has_max_commission_rate_change)
+    //                 {
+    //                     errors.push(Error::InvalidNewValidator(
+    //                         address.clone(),
+    //                         new_validator.clone(),
+    //                     ))
+    //                 }
+    //                 match (has_address_raw_hash, has_consensus_key) {
+    //                     (Some(raw_hash), Some(consensus_key)) => {
+    //                         let expected_raw_hash =
+    // consensus_key.tm_raw_hash();                         if raw_hash !=
+    // &expected_raw_hash {
+    // errors.push(Error::InvalidAddressRawHash(
+    // raw_hash.clone(),                                 expected_raw_hash,
+    //                             ))
+    //                         }
+    //                     }
+    //                     _ => errors.push(Error::InvalidNewValidator(
+    //                         address.clone(),
+    //                         new_validator.clone(),
+    //                     )),
+    //                 }
+    //                 let weighted_validator = WeightedValidator {
+    //                     bonded_stake: *bonded_stake,
+    //                     address: address.clone(),
+    //                 };
+    //                 match validator_sets {
+    //                     Some(set)
+    //                         if set.active.contains(&weighted_validator)
+    //                             || set
+    //                                 .inactive
+    //                                 .contains(&weighted_validator) =>
+    //                     {
+    //                         continue;
+    //                     }
+    //                     _ => errors.push(
+    //
+    // Error::NewValidatorMissingInValidatorSet(address),
+    // ),                 }
+    //             }
+    //         }
+    //     }
+    // }
 
     // Sum the bond totals
     let bond_delta = bond_delta

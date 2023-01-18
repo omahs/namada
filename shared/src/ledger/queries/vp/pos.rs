@@ -1,7 +1,12 @@
 use std::collections::HashSet;
 
+use namada_core::ledger::storage_api::collections::lazy_map;
 use namada_core::ledger::storage_api::OptionExt;
-use namada_proof_of_stake::{self, PosReadOnly};
+use namada_proof_of_stake::types::WeightedValidatorNew;
+use namada_proof_of_stake::{
+    self, active_validator_set_handle, inactive_validator_set_handle,
+    unbond_handle, PosReadOnly,
+};
 
 use crate::ledger::pos::{self, BondId};
 use crate::ledger::queries::types::RequestCtx;
@@ -17,23 +22,38 @@ router! {POS,
         ( "is_validator" / [addr: Address] ) -> bool = is_validator,
 
         ( "addresses" / [epoch: opt Epoch] )
-        -> HashSet<Address> = validator_addresses,
+            -> HashSet<Address> = validator_addresses,
 
         ( "stake" / [validator: Address] / [epoch: opt Epoch] )
-        -> token::Amount = validator_stake,
+            -> token::Amount = validator_stake,
+    },
+
+    ( "validator_set" ) = {
+        // TODO: rename to "consensus"
+        ( "active" / [epoch: opt Epoch] )
+            -> HashSet<WeightedValidatorNew> = active_validator_set,
+
+        // TODO: rename to "below_capacity"
+        ( "inactive" / [epoch: opt Epoch] )
+            -> HashSet<WeightedValidatorNew> = inactive_validator_set,
+
+        // TODO: add "below_threshold"
     },
 
     ( "total_stake" / [epoch: opt Epoch] )
-    -> token::Amount = total_stake,
+        -> token::Amount = total_stake,
 
     ( "delegations" / [owner: Address] )
-    -> HashSet<Address> = delegations,
+        -> HashSet<Address> = delegations,
 
     ( "bond_amount" / [owner: Address] / [validator: Address] / [epoch: opt Epoch] )
-    -> token::Amount = bond_amount,
+        -> token::Amount = bond_amount,
 
     ( "bond_remaining" / [source: Address] / [validator: Address] / [epoch: opt Epoch] )
-    -> token::Amount = bond_remaining_new,
+        -> token::Amount = bond_remaining_new,
+
+    ( "withdrawable_tokens" / [source: Address] / [validator: Address] / [epoch: opt Epoch] )
+        -> token::Amount = withdrawable_tokens,
 
 }
 
@@ -91,6 +111,70 @@ where
     ctx.wl_storage.validator_stake(&validator, epoch)
 }
 
+/// Get all the validator in the active set with their bonded stake.
+fn active_validator_set<D, H>(
+    ctx: RequestCtx<'_, D, H>,
+    epoch: Option<Epoch>,
+) -> storage_api::Result<HashSet<WeightedValidatorNew>>
+where
+    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+    H: 'static + StorageHasher + Sync,
+{
+    let epoch = epoch.unwrap_or(ctx.wl_storage.storage.last_epoch);
+    active_validator_set_handle()
+        .at(&epoch)
+        .iter(ctx.wl_storage)?
+        .map(|next_result| {
+            next_result.map(
+                |(
+                    lazy_map::NestedSubKey::Data {
+                        key: bonded_stake,
+                        nested_sub_key: _position,
+                    },
+                    address,
+                )| {
+                    WeightedValidatorNew {
+                        bonded_stake,
+                        address,
+                    }
+                },
+            )
+        })
+        .collect()
+}
+
+/// Get all the validator in the inactive set with their bonded stake.
+fn inactive_validator_set<D, H>(
+    ctx: RequestCtx<'_, D, H>,
+    epoch: Option<Epoch>,
+) -> storage_api::Result<HashSet<WeightedValidatorNew>>
+where
+    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+    H: 'static + StorageHasher + Sync,
+{
+    let epoch = epoch.unwrap_or(ctx.wl_storage.storage.last_epoch);
+    inactive_validator_set_handle()
+        .at(&epoch)
+        .iter(ctx.wl_storage)?
+        .map(|next_result| {
+            next_result.map(
+                |(
+                    lazy_map::NestedSubKey::Data {
+                        key: bonded_stake,
+                        nested_sub_key: _position,
+                    },
+                    address,
+                )| {
+                    WeightedValidatorNew {
+                        bonded_stake: bonded_stake.into(),
+                        address,
+                    }
+                },
+            )
+        })
+        .collect()
+}
+
 /// Get the total stake in PoS system at the given epoch or current when `None`.
 fn total_stake<D, H>(
     ctx: RequestCtx<'_, D, H>,
@@ -123,6 +207,35 @@ where
         .get_sum(ctx.wl_storage, epoch, &params)?
         .map(token::Amount::from_change)
         .ok_or_err_msg("Cannot find bond")
+}
+
+fn withdrawable_tokens<D, H>(
+    ctx: RequestCtx<'_, D, H>,
+    source: Address,
+    validator: Address,
+    epoch: Option<Epoch>,
+) -> storage_api::Result<token::Amount>
+where
+    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+    H: 'static + StorageHasher + Sync,
+{
+    let epoch = epoch.unwrap_or(ctx.wl_storage.storage.last_epoch);
+
+    let handle = unbond_handle(&source, &validator);
+    let mut total = token::Amount::default();
+    for result in handle.iter(ctx.wl_storage)? {
+        let (
+            lazy_map::NestedSubKey::Data {
+                key: _start,
+                nested_sub_key: lazy_map::SubKey::Data(end),
+            },
+            amount,
+        ) = result?;
+        if end <= epoch {
+            total += amount;
+        }
+    }
+    Ok(total)
 }
 
 /// Get the total bond amount for the given bond ID (this may be delegation or

@@ -343,6 +343,39 @@ impl Display for WeightedValidator {
     }
 }
 
+/// Validator's address with its voting power.
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    BorshDeserialize,
+    BorshSerialize,
+    BorshSchema,
+)]
+pub struct WeightedValidatorNew {
+    /// The `total_stake` field must be on top, because lexicographic ordering
+    /// is based on the top-to-bottom declaration order and in the
+    /// `ValidatorSet` the `WeightedValidator`s these need to be sorted by
+    /// the `total_stake`.
+    pub bonded_stake: token::Amount,
+    /// Validator's address
+    pub address: Address,
+}
+
+impl Display for WeightedValidatorNew {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} with bonded stake {}",
+            self.address, self.bonded_stake
+        )
+    }
+}
+
 /// Active and inactive validator sets.
 #[derive(
     Debug,

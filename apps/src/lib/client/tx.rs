@@ -2474,32 +2474,25 @@ pub async fn submit_withdraw(ctx: Context, args: args::Withdraw) {
     };
     let bond_key = ledger::pos::unbond_key(&bond_id);
     let client = HttpClient::new(args.tx.ledger_address.clone()).unwrap();
-    let unbonds = rpc::query_storage_value::<Unbonds>(&client, &bond_key).await;
-    match unbonds {
-        Some(unbonds) => {
-            let mut unbonded_amount: token::Amount = 0.into();
-            if let Some(unbond) = unbonds.get(epoch) {
-                for delta in unbond.deltas.values() {
-                    unbonded_amount += *delta;
-                }
-            }
-            if unbonded_amount == 0.into() {
-                eprintln!(
-                    "There are no unbonded bonds ready to withdraw in the \
-                     current epoch {}.",
-                    epoch
-                );
-                if !args.tx.force {
-                    safe_exit(1)
-                }
-            }
+    let tokens = rpc::query_withdrawable_tokens(
+        &client,
+        &bond_source,
+        &validator,
+        Some(epoch),
+    )
+    .await;
+    if tokens == 0.into() {
+        eprintln!(
+            "There are no unbonded bonds ready to withdraw in the current \
+             epoch {}.",
+            epoch
+        );
+        if !args.tx.force {
+            safe_exit(1)
         }
-        None => {
-            eprintln!("No unbonded bonds found");
-            if !args.tx.force {
-                safe_exit(1)
-            }
-        }
+    } else {
+        println!("Found {tokens} tokens that can be withdrawn.");
+        println!("Submitting transaction to withdraw them...");
     }
 
     let data = pos::Withdraw { validator, source };

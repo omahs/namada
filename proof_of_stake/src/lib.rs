@@ -45,8 +45,9 @@ use namada_core::types::token;
 use parameters::PosParams;
 use rust_decimal::Decimal;
 use storage::{
-    num_active_validators_key, params_key, validator_address_raw_hash_key,
-    validator_max_commission_rate_change_key, ReverseOrdTokenAmount,
+    into_tm_voting_power, num_active_validators_key, params_key,
+    validator_address_raw_hash_key, validator_max_commission_rate_change_key,
+    ReverseOrdTokenAmount,
 };
 use thiserror::Error;
 use types::{
@@ -2472,19 +2473,6 @@ where
     let tokens_pre = read_validator_stake(storage, params, validator, epoch)?
         .unwrap_or_default();
 
-    active_val_handle.at(&(tokens_pre.mul(2_u64))).insert(
-        storage,
-        Position(epoch.0),
-        ADDRESS,
-    )?;
-    active_val_handle
-        .at(
-            &(read_validator_stake(storage, params, validator, epoch.next())?
-                .unwrap_or_default())
-            .mul(2_u64),
-        )
-        .insert(storage, Position(epoch.0 + 1), POS_SLASH_POOL)?;
-
     let tokens_post = tokens_pre.change() + token_change;
     // TODO: handle overflow or negative vals perhaps with TryFrom
     let tokens_post = token::Amount::from_change(tokens_post);
@@ -2501,13 +2489,7 @@ where
 
     let active_vals_pre = active_val_handle.at(&tokens_pre);
 
-    // TODO: consider checking the validator state instead of checking if the
-    // position is in the set?
-    // if active_vals_pre.contains(storage, &position)? { ---> !this line not
-    // working currently!
-    if validator_state_handle(validator).get(storage, epoch, params)?
-        == Some(ValidatorState::Candidate)
-    {
+    if active_vals_pre.contains(storage, &position)? {
         println!("\nTARGET VALIDATOR IS ACTIVE\n");
         // It's initially active
         let val_address = active_validator_set.get_validator(
@@ -2553,19 +2535,6 @@ where
                 &epoch,
                 validator,
             )?;
-            // Update the new validator states in storage
-            validator_state_handle(&removed_max_inactive.unwrap()).set(
-                storage,
-                ValidatorState::Candidate,
-                current_epoch,
-                params.pipeline_len,
-            )?;
-            validator_state_handle(validator).set(
-                storage,
-                ValidatorState::Inactive,
-                current_epoch,
-                params.pipeline_len,
-            )?;
         } else {
             println!("VALIDATOR REMAINS IN ACTIVE SET\n");
             // The current validator should remain in the active set - place it
@@ -2578,6 +2547,8 @@ where
             )?;
         }
     } else {
+        // TODO: handle the new third set - below threshold
+
         // It's initially inactive
         let inactive_vals_pre = inactive_val_handle.at(&tokens_pre.into());
         let removed = inactive_vals_pre.remove(storage, &position)?;
@@ -2614,19 +2585,6 @@ where
                 storage,
                 &epoch,
                 validator,
-            )?;
-            // Update the new validator states in storage
-            validator_state_handle(&removed_min_active.unwrap()).set(
-                storage,
-                ValidatorState::Inactive,
-                current_epoch,
-                params.pipeline_len,
-            )?;
-            validator_state_handle(validator).set(
-                storage,
-                ValidatorState::Candidate,
-                current_epoch,
-                params.pipeline_len,
             )?;
         } else {
             // The current validator should remain in the inactive set
@@ -2747,26 +2705,13 @@ fn find_next_position<S>(
 where
     S: StorageRead,
 {
-    // Unless we store Positions in the ReverseOrdTokenFormat way, we should
-    // probably just iterate like this:
-    let mut last_position: Option<Position> = None;
-    let mut position_iter = handle.iter(storage)?;
-    loop {
-        let next_position = position_iter
-            .next()
-            .transpose()?
-            .map(|(position, _addr)| position);
-
-        if next_position.is_some() {
-            last_position = next_position;
-        } else {
-            break;
-        }
-    }
-    match last_position {
-        Some(position) => Ok(position.next()),
-        None => Ok(Position::default()),
-    }
+    let position_iter = handle.iter(storage)?;
+    let next = position_iter
+        .last()
+        .transpose()?
+        .map(|(position, _address)| position.next())
+        .unwrap_or_default();
+    Ok(next)
 }
 
 /// Find lowest position in a validator set if it is not empty
@@ -3050,8 +2995,7 @@ where
     )?;
     validator_state_handle(address).init(
         storage,
-        ValidatorState::Candidate, /* TODO: maybe shouldn't be candidate
-                                    * immediately */
+        ValidatorState::Candidate,
         current_epoch,
         params.pipeline_len,
     )?;
@@ -3068,29 +3012,18 @@ where
         params.pipeline_len,
     )?;
 
+    let stake = token::Amount::default();
     let num_active_validators = read_num_active_validators(storage)?;
-    if num_active_validators < params.max_validator_slots {
-        let active_val_handle = active_validator_set_handle()
-            .at(&current_epoch)
-            .at(&token::Amount::default());
-        insert_validator_into_set(
-            &active_val_handle,
-            storage,
-            &current_epoch,
-            address,
-        )?;
+    let pipeline_epoch = current_epoch + params.pipeline_len;
+    let handle = if num_active_validators < params.max_validator_slots {
+        active_validator_set_handle().at(&pipeline_epoch).at(&stake)
     } else {
         // It belongs in the inactive set since it initially has 0 bonded stake
-        let inactive_val_handle = inactive_validator_set_handle()
-            .at(&current_epoch)
-            .at(&token::Amount::default().into());
-        insert_validator_into_set(
-            &inactive_val_handle,
-            storage,
-            &current_epoch,
-            address,
-        )?;
-    }
+        inactive_validator_set_handle()
+            .at(&pipeline_epoch)
+            .at(&stake.into())
+    };
+    insert_validator_into_set(&handle, storage, &pipeline_epoch, address)?;
     Ok(())
 }
 
@@ -3458,10 +3391,7 @@ pub fn validator_set_update_tendermint<S>(
             // contained
             if previous_epoch.is_some() && prev_active_validators.is_some() {
                 let prev_epoch = previous_epoch.unwrap();
-                let prev_active_validators =
-                    prev_active_validators.as_ref().unwrap();
 
-                // Method 1
                 let prev_validator_state = validator_state_handle(&address)
                     .get(storage, prev_epoch, params)
                     .unwrap();
@@ -3470,40 +3400,23 @@ pub fn validator_set_update_tendermint<S>(
                     .unwrap()
                     .map(token::Amount::from_change);
                 if prev_validator_state == Some(ValidatorState::Candidate)
-                    && prev_validator_stake == Some(cur_stake)
+                    && prev_validator_stake.map(|tokens| {
+                        into_tm_voting_power(params.tm_votes_per_token, tokens)
+                    }) == Some(into_tm_voting_power(
+                        params.tm_votes_per_token,
+                        cur_stake,
+                    ))
                 {
                     return None;
                 }
 
-                // Method 2
-                // let prev_position = validator_set_positions_handle()
-                //     .at(&prev_epoch)
-                //     .get(storage, &address)
-                //     .unwrap();
-                // if prev_position.is_some() {
-                //     let prev_address = prev_active_validators
-                //         .at(&cur_stake)
-                //         .get(storage, &prev_position.unwrap())
-                //         .unwrap();
-                //     if prev_address == Some(address.clone()) {
-                //         return None;
-                //     }
-                // }
-                // TODO: remove one of the above methods
-
-                // TODO: this will be deprecated, but not sure if it is even
-                // needed rn
                 if cur_stake == token::Amount::default() {
-                    let state = validator_state_handle(&address)
-                        .get(storage, prev_epoch, params)
-                        .unwrap();
-                    if let Some(ValidatorState::Pending) = state {
-                        println!(
-                            "skipping validator update, it's new {}",
-                            address.clone()
-                        );
-                        return None;
-                    }
+                    println!(
+                        "skipping validator update, {} active but without a \
+                         stake",
+                        address
+                    );
+                    return None;
                 }
             }
             println!("\nMAKING AN ACTIVE VALIDATOR CHANGE");

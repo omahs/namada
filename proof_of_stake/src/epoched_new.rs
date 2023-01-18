@@ -16,8 +16,8 @@ use namada_core::types::storage::{self, Epoch};
 
 use crate::parameters::PosParams;
 
-const LAZY_MAP_SUB_KEY: &str = "lazy_map";
-const LAST_UPDATE_SUB_KEY: &str = "last_update";
+pub const LAZY_MAP_SUB_KEY: &str = "lazy_map";
+pub const LAST_UPDATE_SUB_KEY: &str = "last_update";
 
 /// Discrete epoched data handle
 pub struct Epoched<

@@ -1386,6 +1386,20 @@ pub async fn query_bond_remaining(
     )
 }
 
+pub async fn query_withdrawable_tokens(
+    client: &HttpClient,
+    bond_source: &Address,
+    validator: &Address,
+    epoch: Option<Epoch>,
+) -> token::Amount {
+    unwrap_client_response(
+        RPC.vp()
+            .pos()
+            .withdrawable_tokens(client, bond_source, validator, &epoch)
+            .await,
+    )
+}
+
 /// Query PoS bond(s)
 pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
     let epoch = query_epoch(args.query.clone()).await;
@@ -1741,16 +1755,6 @@ pub async fn query_bonded_stake(ctx: Context, args: args::QueryBondedStake) {
     };
     let client = HttpClient::new(args.query.ledger_address).unwrap();
 
-    // Find the validator set
-    let validator_set_key = pos::validator_set_key();
-    let validator_sets =
-        query_storage_value::<pos::ValidatorSets>(&client, &validator_set_key)
-            .await
-            .expect("Validator set should always be set");
-    let validator_set = validator_sets
-        .get(epoch)
-        .expect("Validator set should be always set in the current epoch");
-
     match args.validator {
         Some(validator) => {
             let validator = ctx.get(&validator);
@@ -1771,16 +1775,11 @@ pub async fn query_bonded_stake(ctx: Context, args: args::QueryBondedStake) {
                         address: validator.clone(),
                         bonded_stake,
                     };
-                    let is_active = validator_set.active.contains(&weighted);
-                    if !is_active {
-                        debug_assert!(
-                            validator_set.inactive.contains(&weighted)
-                        );
-                    }
+                    // TODO: show if it's in consensus set, below capacity, or
+                    // below threshold set
                     println!(
-                        "Validator {} is {}, bonded stake: {}",
+                        "Bonded stake of validator {}: {}",
                         validator.encode(),
-                        if is_active { "active" } else { "inactive" },
                         bonded_stake,
                     )
                 }
@@ -1790,12 +1789,25 @@ pub async fn query_bonded_stake(ctx: Context, args: args::QueryBondedStake) {
             }
         }
         None => {
+            let active = unwrap_client_response(
+                RPC.vp()
+                    .pos()
+                    .active_validator_set(&client, &Some(epoch))
+                    .await,
+            );
+            let inactive = unwrap_client_response(
+                RPC.vp()
+                    .pos()
+                    .inactive_validator_set(&client, &Some(epoch))
+                    .await,
+            );
+
             // Iterate all validators
             let stdout = io::stdout();
             let mut w = stdout.lock();
 
             writeln!(w, "Active validators:").unwrap();
-            for active in &validator_set.active {
+            for active in active {
                 writeln!(
                     w,
                     "  {}: {}",
@@ -1804,9 +1816,9 @@ pub async fn query_bonded_stake(ctx: Context, args: args::QueryBondedStake) {
                 )
                 .unwrap();
             }
-            if !validator_set.inactive.is_empty() {
+            if !inactive.is_empty() {
                 writeln!(w, "Inactive validators:").unwrap();
-                for inactive in &validator_set.inactive {
+                for inactive in &inactive {
                     writeln!(
                         w,
                         "  {}: {}",

@@ -1925,8 +1925,6 @@ fn pos_bonds() -> Result<()> {
         }
     }
 
-    return Ok(());
-
     // 7. Submit a withdrawal of the self-bond
     let tx_args = vec![
         "withdraw",

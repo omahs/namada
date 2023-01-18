@@ -127,11 +127,14 @@ where
         for key in keys_changed {
             // println!("KEY: {}\n", key);
             if is_params_key(key) {
-                return governance::utils::is_proposal_accepted(
+                if !governance::utils::is_proposal_accepted(
                     &self.ctx.pre(),
                     tx_data,
                 )
-                .map_err(Error::NativeVpError);
+                .map_err(Error::NativeVpError)?
+                {
+                    return Ok(false);
+                }
             } else if let Some(raw_hash) =
                 is_validator_address_raw_hash_key(key)
             {
