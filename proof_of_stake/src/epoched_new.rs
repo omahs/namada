@@ -424,7 +424,7 @@ where
         // first entry in iteration then None afterward). Figure
         // this out!!!
 
-        println!("GET_SUM AT EPOCH {}", epoch.clone());
+        // println!("GET_SUM AT EPOCH {}", epoch.clone());
         let last_update = self.get_last_update(storage)?;
         match last_update {
             None => Ok(None),
@@ -441,8 +441,8 @@ where
                 // drop(it);
 
                 let future_most_epoch =
-                    dbg!(last_update) + dbg!(FutureEpochs::value(params));
-                dbg!(future_most_epoch);
+                    last_update + FutureEpochs::value(params);
+                // dbg!(future_most_epoch);
                 // Epoch can be a lot greater than the epoch where
                 // a value is recorded, we check the upper bound
                 // epoch of the LazyMap data
@@ -475,9 +475,9 @@ where
                 // THIS IS THE HACKY METHOD UNTIL I FIGURE OUT WTF GOING ON WITH
                 // THE ITER
                 let start_epoch = Self::sub_past_epochs(last_update);
-                println!("GETTING SUM OF DELTAS");
+                // println!("GETTING SUM OF DELTAS");
                 for ep in (start_epoch.0)..=(epoch.0) {
-                    println!("epoch {}", ep);
+                    // println!("epoch {}", ep);
 
                     if let Some(val) = data_handler.get(storage, &Epoch(ep))? {
                         if sum.is_none() {
@@ -486,7 +486,7 @@ where
                             sum = sum.map(|cur_sum| cur_sum + val);
                         }
                     }
-                    dbg!(&sum);
+                    // dbg!(&sum);
                 }
                 Ok(sum)
             }

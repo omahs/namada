@@ -1879,29 +1879,29 @@ fn pos_bonds() -> Result<()> {
     client.exp_string("Transaction is valid.")?;
     client.assert_success();
 
-    // println!("\nSUBMITTING UNBOND OF DELEGATION\n");
+    println!("\nSUBMITTING UNBOND OF DELEGATION\n");
 
-    // // 5. Submit an unbond of the delegation
-    // let tx_args = vec![
-    //     "unbond",
-    //     "--validator",
-    //     "validator-0",
-    //     "--source",
-    //     BERTHA,
-    //     "--amount",
-    //     "32",
-    //     "--gas-amount",
-    //     "0",
-    //     "--gas-limit",
-    //     "0",
-    //     "--gas-token",
-    //     NAM,
-    //     "--ledger-address",
-    //     &validator_one_rpc,
-    // ];
-    // let mut client = run!(test, Bin::Client, tx_args, Some(40))?;
-    // client.exp_string("Transaction is valid.")?;
-    // client.assert_success();
+    // 5. Submit an unbond of the delegation
+    let tx_args = vec![
+        "unbond",
+        "--validator",
+        "validator-0",
+        "--source",
+        BERTHA,
+        "--amount",
+        "32",
+        "--gas-amount",
+        "0",
+        "--gas-limit",
+        "0",
+        "--gas-token",
+        NAM,
+        "--ledger-address",
+        &validator_one_rpc,
+    ];
+    let mut client = run!(test, Bin::Client, tx_args, Some(40))?;
+    client.exp_string("Transaction is valid.")?;
+    client.assert_success();
 
     // 6. Wait for the unbonding epoch
     let epoch = get_epoch(&test, &validator_one_rpc)?;

@@ -55,13 +55,7 @@ impl Ctx {
         amount: token::Amount,
     ) -> TxResult {
         let current_epoch = self.get_block_epoch()?;
-        bond_tokens_new(
-            self,
-            source,
-            validator,
-            token::Change::from(amount),
-            current_epoch,
-        )
+        bond_tokens_new(self, source, validator, amount, current_epoch)
     }
 
     /// Unbond self-bonded tokens from a validator when `source` is `None` or
@@ -94,13 +88,7 @@ impl Ctx {
     ) -> TxResult {
         let current_epoch = self.get_block_epoch()?;
         println!("UNBONDING IN EPOCH {}\n", current_epoch);
-        unbond_tokens_new(
-            self,
-            source,
-            validator,
-            token::Change::from(amount),
-            current_epoch,
-        )
+        unbond_tokens_new(self, source, validator, amount, current_epoch)
     }
 
     /// Withdraw unbonded tokens from a self-bond to a validator when `source`

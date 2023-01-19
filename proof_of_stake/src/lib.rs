@@ -36,6 +36,7 @@ use namada_core::ledger::storage_api::collections::lazy_map::{
     NestedSubKey, SubKey,
 };
 use namada_core::ledger::storage_api::collections::LazyCollection;
+use namada_core::ledger::storage_api::token::credit_tokens;
 use namada_core::ledger::storage_api::{
     self, OptionExt, StorageRead, StorageWrite,
 };
@@ -1787,7 +1788,8 @@ pub fn init_genesis_new<S>(
 where
     S: StorageRead + StorageWrite,
 {
-    println!("INITIALIZING GENESIS\n");
+    println!("INITIALIZING GENESIS");
+    println!("GENESIS VALIDATORS\n");
     write_pos_params(storage, params.clone())?;
 
     let mut total_bonded = token::Amount::default();
@@ -1812,6 +1814,13 @@ where
 
         let active_val_handle =
             active_validator_set_handle().at(&current_epoch).at(&tokens);
+
+        validator_state_handle(&address).init_at_genesis(
+            storage,
+            ValidatorState::Candidate,
+            current_epoch,
+        )?;
+
         // Insert the validator into the proper set
         if n_validators < params.max_validator_slots {
             insert_validator_into_set(
@@ -1819,11 +1828,6 @@ where
                 storage,
                 &current_epoch,
                 &address,
-            )?;
-            validator_state_handle(&address).init_at_genesis(
-                storage,
-                ValidatorState::Candidate,
-                current_epoch,
             )?;
         } else {
             // Check to see if the current genesis validator should replace one
@@ -1861,17 +1865,6 @@ where
                     &address,
                 )?;
                 // Update and set the validator states
-                validator_state_handle(&address).init_at_genesis(
-                    storage,
-                    ValidatorState::Candidate,
-                    current_epoch,
-                )?;
-                validator_state_handle(&removed.unwrap()).set(
-                    storage,
-                    ValidatorState::Inactive,
-                    current_epoch,
-                    0,
-                )?;
             } else {
                 // Insert the current genesis validator into the inactive set
                 insert_validator_into_set(
@@ -1882,11 +1875,11 @@ where
                     &current_epoch,
                     &address,
                 )?;
-                validator_state_handle(&address).init_at_genesis(
-                    storage,
-                    ValidatorState::Inactive,
-                    current_epoch,
-                )?;
+                // validator_state_handle(&address).init_at_genesis(
+                //     storage,
+                //     ValidatorState::Inactive,
+                //     current_epoch,
+                // )?;
             }
         }
         // Write other validator data to storage
@@ -1938,12 +1931,7 @@ where
         current_epoch,
     )?;
     // Credit bonded token amount to the PoS account
-    credit_tokens_new(
-        storage,
-        &staking_token_address(),
-        &ADDRESS,
-        total_bonded,
-    );
+    credit_tokens(storage, &staking_token_address(), &ADDRESS, total_bonded);
     // Copy the genesis validator set into the pipeline epoch as well
     for epoch in (current_epoch.next()).iter_range(params.pipeline_len) {
         copy_validator_sets(
@@ -2085,7 +2073,7 @@ pub fn read_validator_stake<S>(
 where
     S: StorageRead,
 {
-    println!("\nREAD VALIDATOR STAKE AT EPOCH {}", epoch);
+    // println!("\nREAD VALIDATOR STAKE AT EPOCH {}", epoch);
     let handle = validator_deltas_handle(validator);
     let amount = handle
         .get_sum(storage, epoch, params)?
@@ -2314,12 +2302,13 @@ pub fn bond_tokens_new<S>(
     storage: &mut S,
     source: Option<&Address>,
     validator: &Address,
-    amount: token::Change,
+    amount: token::Amount,
     current_epoch: Epoch,
 ) -> storage_api::Result<()>
 where
     S: StorageRead + StorageWrite,
 {
+    let amount = amount.change();
     println!("BONDING TOKEN AMOUNT {}\n", amount);
     let params = read_pos_params(storage)?;
     if let Some(source) = source {
@@ -2365,6 +2354,7 @@ where
 
     if !bond_remain_handle.get_data_handler().is_empty(storage)? {
         println!("BOND EXISTS TO BEGIN WITH\n");
+
         // let cur_amount = bond_amount_handle
         //     .get_delta_val(storage, current_epoch + offset, &params)?
         //     .unwrap_or_default();
@@ -2377,6 +2367,11 @@ where
         //     current_epoch,
         //     offset,
         // )?;
+        // println!(
+        //     "Bond remain at offset epoch {}: {}\n",
+        //     current_epoch + offset,
+        //     cur_remain
+        // );
         bond_remain_handle.set(
             storage,
             cur_remain + amount,
@@ -2390,7 +2385,19 @@ where
         bond_remain_handle.init(storage, amount, current_epoch, offset)?;
     }
 
-    println!("UPDATING VALIDATOR SET NOW\n");
+    dbg!(&current_epoch);
+
+    for ep in (current_epoch - 1_u64).iter_range(params.unbonding_len + 2) {
+        println!(
+            "bond delta at epoch {}: {}",
+            ep,
+            bond_remain_handle
+                .get_delta_val(storage, ep, &params)?
+                .unwrap_or_default()
+        )
+    }
+
+    println!("\nUPDATING VALIDATOR SET NOW\n");
 
     // Update the validator set
     update_validator_set_new(
@@ -2405,6 +2412,12 @@ where
     println!("UPDATING VALIDATOR DELTAS NOW\n");
 
     // Update the validator and total deltas
+    dbg!(read_validator_stake(
+        storage,
+        &params,
+        validator,
+        current_epoch + params.pipeline_len
+    )?);
     update_validator_deltas(
         storage,
         &params,
@@ -2412,6 +2425,12 @@ where
         amount,
         current_epoch,
     )?;
+    dbg!(read_validator_stake(
+        storage,
+        &params,
+        validator,
+        current_epoch + params.pipeline_len
+    )?);
     // dbg!(validator_deltas_handle(validator).get_delta_val(
     //     storage,
     //     current_epoch,
@@ -2467,6 +2486,7 @@ where
         return Ok(());
     }
     let epoch = current_epoch + params.pipeline_len;
+    println!("Update epoch for validator set: {epoch}\n");
 
     // Validator sets at the pipeline offset. If these are empty, then we need
     // to copy over the most recent filled validator set into this epoch first
@@ -2475,6 +2495,8 @@ where
 
     let tokens_pre = read_validator_stake(storage, params, validator, epoch)?
         .unwrap_or_default();
+
+    println!("VALIDATOR STAKE BEFORE UPDATE: {}\n", tokens_pre);
 
     let tokens_post = tokens_pre.change() + token_change;
     // TODO: handle overflow or negative vals perhaps with TryFrom
@@ -2489,23 +2511,33 @@ where
             .ok_or_err_msg(
                 "Validator must have a stored validator set position",
             )?;
+    // dbg!(&position);
+    // for ep in Epoch::default().iter_range(params.unbonding_len) {
+    //     println!(
+    //         "Epoch {ep}: is val set empty? {}",
+    //         active_validator_set.at(&ep).is_empty(storage)?
+    //     );
+    // }
 
     let active_vals_pre = active_val_handle.at(&tokens_pre);
 
     if active_vals_pre.contains(storage, &position)? {
         println!("\nTARGET VALIDATOR IS ACTIVE\n");
         // It's initially active
-        let val_address = active_validator_set.get_validator(
-            storage,
-            epoch,
-            &tokens_pre,
-            &position,
-            params,
-        )?;
+        // let val_address = active_validator_set.get_validator(
+        //     storage,
+        //     epoch,
+        //     &tokens_pre,
+        //     &position,
+        //     params,
+        // )?;
+        let val_address = active_vals_pre.get(storage, &position)?;
         // debug_assert!(val_address.is_some());
         assert!(val_address.is_some());
 
+        dbg!(active_vals_pre.is_empty(storage).unwrap());
         active_vals_pre.remove(storage, &position)?;
+        dbg!(active_vals_pre.is_empty(storage).unwrap());
 
         let max_inactive_validator_amount =
             get_max_inactive_validator_amount(&inactive_val_handle, storage)?;
@@ -2657,8 +2689,8 @@ where
                 ) = val?;
                 inactive_in_mem.insert((stake, position), address);
             }
-            dbg!(&search_epoch);
-            dbg!(&active_in_mem);
+            // dbg!(&search_epoch);
+            // dbg!(&active_in_mem);
 
             for ((val_stake, val_position), val_address) in
                 active_in_mem.into_iter()
@@ -2804,14 +2836,26 @@ pub fn unbond_tokens_new<S>(
     storage: &mut S,
     source: Option<&Address>,
     validator: &Address,
-    amount: token::Change,
+    amount: token::Amount,
     current_epoch: Epoch,
 ) -> storage_api::Result<()>
 where
     S: StorageRead + StorageWrite,
 {
-    println!("UNBONDING TOKEN AMOUNT {}\n", amount);
+    let amount = amount.change();
+    println!("UNBONDING TOKEN AMOUNT {amount} at epoch {current_epoch}\n");
     let params = read_pos_params(storage)?;
+    println!(
+        "Current validator stake at pipeline: {}",
+        read_validator_stake(
+            storage,
+            &params,
+            validator,
+            current_epoch + params.pipeline_len
+        )?
+        .unwrap_or_default()
+    );
+
     if let Some(source) = source {
         if source != validator
             && is_validator(storage, source, &params, current_epoch)?
@@ -2876,6 +2920,8 @@ where
         .get_data_handler()
         .iter(storage)?
         .collect();
+    println!("\nBonds before decrementing:");
+    dbg!(&bonds);
     let mut bond_iter = bonds.into_iter().rev();
 
     // Map: { bond start epoch, (new bond value, unbond value) }
@@ -2920,6 +2966,18 @@ where
         )?;
     }
 
+    println!("\nBonds after decrementing:");
+    for ep in Epoch::default().iter_range(params.unbonding_len + 5) {
+        println!(
+            "bond delta at epoch {}: {}",
+            ep,
+            bond_remain_handle
+                .get_delta_val(storage, ep, &params)?
+                .unwrap_or_default()
+        )
+    }
+
+    println!("Updating validator set for unbonding");
     // Update the validator set at the pipeline offset
     update_validator_set_new(
         storage,
@@ -3275,29 +3333,6 @@ where
     return Ok(());
 }
 
-/// Credit tokens to an account, to be used only during genesis
-/// TODO: may want to move this into core crate
-pub fn credit_tokens_new<S>(
-    storage: &mut S,
-    token: &Address,
-    target: &Address,
-    amount: token::Amount,
-) where
-    S: StorageRead + StorageWrite,
-{
-    let key = token::balance_key(token, target);
-    let new_balance = match storage
-        .read::<token::Amount>(&key)
-        .expect("Unable to read token balance for PoS system")
-    {
-        Some(balance) => balance + amount,
-        None => amount,
-    };
-    storage
-        .write(&key, new_balance)
-        .expect("Unable to write token balance for PoS system");
-}
-
 /// NEW: Get the total bond amount for a given bond ID at a given epoch
 pub fn bond_amount_new<S>(
     storage: &S,
@@ -3414,6 +3449,8 @@ pub fn validator_set_update_tendermint<S>(
                 }
 
                 if cur_stake == token::Amount::default() {
+                    // TODO: check if it's new validator or previously non-0
+                    // stake
                     println!(
                         "skipping validator update, {} active but without a \
                          stake",
@@ -3475,6 +3512,9 @@ pub fn validator_set_update_tendermint<S>(
                 // TODO: this will be deprecated, but not sure if it is even
                 // needed rn
                 if cur_stake == token::Amount::default() {
+                    // TODO: check if it's new validator or previously non-0
+                    // stake after `Pending` state is
+                    // removed
                     let state = validator_state_handle(&address)
                         .get(storage, prev_epoch, params)
                         .unwrap();

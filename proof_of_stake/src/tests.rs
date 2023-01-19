@@ -4,10 +4,11 @@ use std::ops::Range;
 
 use namada_core::ledger::storage::testing::TestWlStorage;
 use namada_core::ledger::storage_api::token::credit_tokens;
+use namada_core::ledger::storage_api::StorageRead;
 use namada_core::types::address::testing::address_from_simple_seed;
 use namada_core::types::key::testing::common_sk_from_simple_seed;
 use namada_core::types::storage::Epoch;
-use namada_core::types::token;
+use namada_core::types::{address, token};
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 use rust_decimal::Decimal;
@@ -19,8 +20,9 @@ use crate::parameters::testing::arb_pos_params;
 use crate::parameters::PosParams;
 use crate::types::{GenesisValidator, ValidatorState};
 use crate::{
-    active_validator_set_handle, bond_tokens_new,
-    inactive_validator_set_handle, init_genesis_new, staking_token_address,
+    active_validator_set_handle, bond_tokens_new, copy_validator_sets,
+    inactive_validator_set_handle, init_genesis_new,
+    read_active_validator_set_addresses_with_stake, staking_token_address,
     unbond_tokens_new, validator_state_handle,
 };
 
@@ -115,44 +117,129 @@ fn test_init_genesis_aux(
 }
 
 /// Test bonding
-fn test_bonds_aux(params: PosParams, mut validators: Vec<GenesisValidator>) {
-    println!("Test inputs: {params:?}, genesis validators: {validators:#?}");
+/// NOTE: copy validator sets each time we advance the epoch
+fn test_bonds_aux(
+    mut params: PosParams,
+    mut validators: Vec<GenesisValidator>,
+) {
+    params.pipeline_len = 2;
+    params.unbonding_len = 4;
+    println!("\nTest inputs: {params:?}, genesis validators: {validators:#?}");
     let mut s = TestWlStorage::default();
 
-    let epoch = s.storage.block.epoch;
-    init_genesis_new(&mut s, &params, validators.clone().into_iter(), epoch)
-        .unwrap();
+    // Genesis
+    let mut current_epoch = dbg!(s.storage.block.epoch);
+    init_genesis_new(
+        &mut s,
+        &params,
+        validators.clone().into_iter(),
+        current_epoch,
+    )
+    .unwrap();
     s.commit_genesis().unwrap();
 
+    // Advance to epoch 1
     s.storage.block.epoch = s.storage.block.epoch.next();
+    current_epoch = s.storage.block.epoch;
+    copy_validator_sets(
+        &mut s,
+        current_epoch + params.pipeline_len,
+        &active_validator_set_handle(),
+        &inactive_validator_set_handle(),
+    )
+    .unwrap();
 
     let validator = validators.first().unwrap();
 
+    // Self-bond
     let amount = token::Amount::from(100_500_000);
     credit_tokens(&mut s, &staking_token_address(), &validator.address, amount)
         .unwrap();
+    bond_tokens_new(&mut s, None, &validator.address, amount, current_epoch)
+        .unwrap();
 
-    let epoch = s.storage.block.epoch;
+    // Advance to epoch 2
+    s.storage.block.epoch = s.storage.block.epoch.next();
+    current_epoch = s.storage.block.epoch;
+    copy_validator_sets(
+        &mut s,
+        current_epoch + params.pipeline_len,
+        &active_validator_set_handle(),
+        &inactive_validator_set_handle(),
+    )
+    .unwrap();
+
+    // Get a non-validating account with tokens
+    let delegator = address::testing::gen_implicit_address();
+    let amount = token::Amount::from(201_000_000);
+    credit_tokens(&mut s, &staking_token_address(), &delegator, amount)
+        .unwrap();
+    let balance_key = token::balance_key(&staking_token_address(), &delegator);
+    let balance = s
+        .read::<token::Amount>(&balance_key)
+        .unwrap()
+        .unwrap_or_default();
+    dbg!(balance);
+
+    // Advance to epoch 3
+    s.storage.block.epoch = s.storage.block.epoch.next();
+    current_epoch = s.storage.block.epoch;
+    copy_validator_sets(
+        &mut s,
+        current_epoch + params.pipeline_len,
+        &active_validator_set_handle(),
+        &inactive_validator_set_handle(),
+    )
+    .unwrap();
+
+    // Delegation
     bond_tokens_new(
         &mut s,
-        Some(&validator.address),
+        Some(&delegator),
         &validator.address,
         amount,
-        epoch,
+        current_epoch,
     )
     .unwrap();
 
+    // Advance to epoch 5
+    for _ in 0..2 {
+        s.storage.block.epoch = s.storage.block.epoch.next();
+        current_epoch = s.storage.block.epoch;
+        copy_validator_sets(
+            &mut s,
+            current_epoch + params.pipeline_len,
+            &active_validator_set_handle(),
+            &inactive_validator_set_handle(),
+        )
+        .unwrap();
+    }
+
+    // Unbond the self-bond
+    unbond_tokens_new(&mut s, None, &validator.address, amount, current_epoch)
+        .unwrap();
+
+    // Advance to epoch 6
     s.storage.block.epoch = s.storage.block.epoch.next();
-
-    let epoch = s.storage.block.epoch;
-    unbond_tokens_new(
+    let current_epoch = s.storage.block.epoch;
+    copy_validator_sets(
         &mut s,
-        Some(&validator.address),
-        &validator.address,
-        amount,
-        epoch,
+        current_epoch + params.pipeline_len,
+        &active_validator_set_handle(),
+        &inactive_validator_set_handle(),
     )
     .unwrap();
+
+    for ep in Epoch::default().iter_range(params.unbonding_len * 3) {
+        println!("Epoch {ep}");
+        let a = read_active_validator_set_addresses_with_stake(
+            &s,
+            &active_validator_set_handle(),
+            ep,
+        )
+        .unwrap();
+        dbg!(a);
+    }
 }
 
 fn arb_genesis_validators(

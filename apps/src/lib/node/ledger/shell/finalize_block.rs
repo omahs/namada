@@ -44,6 +44,7 @@ where
         req: shim::request::FinalizeBlock,
     ) -> Result<shim::response::FinalizeBlock> {
         // reset gas meter before we start
+        println!("\nSTART FINALIZE BLOCK");
         self.gas_meter.reset();
 
         let mut response = shim::response::FinalizeBlock::default();
@@ -118,6 +119,10 @@ where
                         .unwrap()
                 );
             }
+        } else {
+            dbg!(namada_proof_of_stake::read_active_validator_set_addresses_with_stake(&self.wl_storage, &namada_proof_of_stake::active_validator_set_handle(), current_epoch).unwrap());
+            dbg!(namada_proof_of_stake::read_active_validator_set_addresses_with_stake(&self.wl_storage, &namada_proof_of_stake::active_validator_set_handle(), current_epoch.next()).unwrap());
+            dbg!(namada_proof_of_stake::read_active_validator_set_addresses_with_stake(&self.wl_storage, &namada_proof_of_stake::active_validator_set_handle(), current_epoch.next().next()).unwrap());
         }
 
         let wrapper_fees = self.get_wrapper_tx_fees();
@@ -399,7 +404,7 @@ where
             .map_err(|_| Error::GasOverflow)?;
 
         self.event_log_mut().log_events(response.events.clone());
-        println!("\nEND FINALIZE BLOCK");
+        println!("\nEND FINALIZE BLOCK {height} OF EPOCH {current_epoch}");
 
         Ok(response)
     }
