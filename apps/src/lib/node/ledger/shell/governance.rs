@@ -5,13 +5,13 @@ use namada::ledger::governance::{
     storage as gov_storage, ADDRESS as gov_address,
 };
 use namada::ledger::native_vp::governance::utils::{
-    compute_tally, get_proposal_votes, ProposalEvent, Tally,
+    compute_tally, get_proposal_votes, ProposalEvent,
 };
 use namada::ledger::protocol;
 use namada::ledger::storage::types::encode;
 use namada::ledger::storage::{DBIter, StorageHasher, DB};
 use namada::types::address::Address;
-use namada::types::governance::TallyResult;
+use namada::types::governance::{Tally, TallyResult};
 use namada::types::storage::Epoch;
 use namada::types::token;
 
@@ -136,7 +136,11 @@ where
                                                     ProposalEvent::new(
                                                         EventType::Proposal
                                                             .to_string(),
-                                                        TallyResult::Passed,
+                                                        TallyResult::Passed(
+                                                            Tally::Default(
+                                                                true,
+                                                            ),
+                                                        ),
                                                         id,
                                                         true,
                                                         true,
@@ -156,7 +160,11 @@ where
                                                     ProposalEvent::new(
                                                         EventType::Proposal
                                                             .to_string(),
-                                                        TallyResult::Passed,
+                                                        TallyResult::Passed(
+                                                            Tally::Default(
+                                                                true,
+                                                            ),
+                                                        ),
                                                         id,
                                                         true,
                                                         false,
@@ -178,7 +186,9 @@ where
                                                 ProposalEvent::new(
                                                     EventType::Proposal
                                                         .to_string(),
-                                                    TallyResult::Passed,
+                                                    TallyResult::Passed(
+                                                        Tally::Default(true),
+                                                    ),
                                                     id,
                                                     true,
                                                     false,
@@ -197,7 +207,9 @@ where
                                     let proposal_event: Event =
                                         ProposalEvent::new(
                                             EventType::Proposal.to_string(),
-                                            TallyResult::Passed,
+                                            TallyResult::Passed(
+                                                Tally::Default(true),
+                                            ),
                                             id,
                                             false,
                                             false,
