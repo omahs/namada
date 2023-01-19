@@ -3,6 +3,7 @@
 use std::ops::Range;
 
 use namada_core::ledger::storage::testing::TestWlStorage;
+use namada_core::ledger::storage_api::token::credit_tokens;
 use namada_core::types::address::testing::address_from_simple_seed;
 use namada_core::types::key::testing::common_sk_from_simple_seed;
 use namada_core::types::storage::Epoch;
@@ -16,10 +17,11 @@ use test_log::test;
 
 use crate::parameters::testing::arb_pos_params;
 use crate::parameters::PosParams;
-use crate::types::GenesisValidator;
+use crate::types::{GenesisValidator, ValidatorState};
 use crate::{
-    active_validator_set_handle, inactive_validator_set_handle,
-    init_genesis_new,
+    active_validator_set_handle, bond_tokens_new,
+    inactive_validator_set_handle, init_genesis_new, staking_token_address,
+    unbond_tokens_new, validator_state_handle,
 };
 
 proptest! {
@@ -31,12 +33,29 @@ proptest! {
     #[test]
     fn test_init_genesis(
 
-    pos_params in arb_pos_params(),
+    pos_params in arb_pos_params(None),
     start_epoch in (0_u64..1000).prop_map(Epoch),
     genesis_validators in arb_genesis_validators(1..200),
 
     ) {
         test_init_genesis_aux(pos_params, start_epoch, genesis_validators)
+    }
+}
+
+proptest! {
+    // Generate arb valid input for `test_bonds_aux`
+    #![proptest_config(Config {
+        cases: 1,
+        .. Config::default()
+    })]
+    #[test]
+    fn test_bonds(
+
+    pos_params in arb_pos_params(Some(5)),
+    genesis_validators in arb_genesis_validators(1..3),
+
+    ) {
+        test_bonds_aux(pos_params, genesis_validators)
     }
 }
 
@@ -51,6 +70,7 @@ fn test_init_genesis_aux(
          {validators:#?}"
     );
     let mut s = TestWlStorage::default();
+    s.storage.block.epoch = start_epoch;
 
     init_genesis_new(
         &mut s,
@@ -85,7 +105,54 @@ fn test_init_genesis_aux(
                 }
             ));
         }
+
+        let state = validator_state_handle(&validator.address)
+            .get(&mut s, start_epoch, &params)
+            .unwrap();
+
+        assert_eq!(state, Some(ValidatorState::Candidate));
     }
+}
+
+/// Test bonding
+fn test_bonds_aux(params: PosParams, mut validators: Vec<GenesisValidator>) {
+    println!("Test inputs: {params:?}, genesis validators: {validators:#?}");
+    let mut s = TestWlStorage::default();
+
+    let epoch = s.storage.block.epoch;
+    init_genesis_new(&mut s, &params, validators.clone().into_iter(), epoch)
+        .unwrap();
+    s.commit_genesis().unwrap();
+
+    s.storage.block.epoch = s.storage.block.epoch.next();
+
+    let validator = validators.first().unwrap();
+
+    let amount = token::Amount::from(100_500_000);
+    credit_tokens(&mut s, &staking_token_address(), &validator.address, amount)
+        .unwrap();
+
+    let epoch = s.storage.block.epoch;
+    bond_tokens_new(
+        &mut s,
+        Some(&validator.address),
+        &validator.address,
+        amount,
+        epoch,
+    )
+    .unwrap();
+
+    s.storage.block.epoch = s.storage.block.epoch.next();
+
+    let epoch = s.storage.block.epoch;
+    unbond_tokens_new(
+        &mut s,
+        Some(&validator.address),
+        &validator.address,
+        amount,
+        epoch,
+    )
+    .unwrap();
 }
 
 fn arb_genesis_validators(
