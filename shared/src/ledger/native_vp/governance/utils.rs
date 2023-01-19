@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use borsh::BorshDeserialize;
+use namada_core::types::governance::ProposalResult;
 use namada_core::types::transaction::governance::ProposalType;
 use namada_proof_of_stake::PosReadOnly;
 use thiserror::Error;
@@ -81,34 +82,33 @@ impl ProposalEvent {
 }
 
 /// Return a proposal result
-pub fn compute_tally<D, H>(
-    storage: &Storage<D, H>,
-    epoch: Epoch,
+pub fn compute_tally(
     votes: Votes,
+    total_stake: VotePower,
     proposal_type: &ProposalType,
-) -> storage_api::Result<Tally>
-where
-    D: DB + for<'iter> DBIter<'iter> + Sync + 'static,
-    H: StorageHasher + Sync + 'static,
-{
+) -> ProposalResult {
     let Votes {
         yay_validators,
         yay_delegators,
         nay_delegators,
     } = votes;
 
-    let total_stake: VotePower = storage.total_stake(epoch)?.into();
-
     match proposal_type {
         ProposalType::Default(_) => {
-            let mut total_yay_staked_tokens = VotePower::from(0u64);
+            let mut total_yay_staked_tokens = VotePower::default();
             for (_, (amount, validator_vote)) in yay_validators.iter() {
                 if let ProposalVote::Yay(VoteType::Default) = validator_vote {
                     total_yay_staked_tokens += amount;
                 } else {
-                    return Err(storage_api::Error::SimpleMessage(
-                        "Unexpected vote type",
-                    ));
+                    return ProposalResult {
+                        result: TallyResult::Failed(format!(
+                        "Unexpected vote type. Expected: Default, Found: {}",
+                        validator_vote
+                    )),
+                        total_voting_power: total_stake,
+                        total_yay_power: 0,
+                        total_nay_power: 0,
+                    };
                 }
             }
 
@@ -123,9 +123,11 @@ where
                             total_yay_staked_tokens += vote_power;
                         }
                     } else {
-                        return Err(storage_api::Error::SimpleMessage(
-                            "Unexpected vote type",
-                        ));
+                         return ProposalResult {
+                            result: TallyResult::Failed(format!("Unexpected vote type. Expected: Default, Found: {}", delegator_vote)),
+                            total_voting_power: total_stake,
+                            total_yay_power: 0,
+                            total_nay_power: 0}
                     }
                 }
             }
@@ -140,29 +142,50 @@ where
                             total_yay_staked_tokens -= vote_power;
                         }
                     } else {
-                        return Err(storage_api::Error::SimpleMessage(
-                            "Unexpected vote type",
-                        ));
+                        return ProposalResult {
+                            result: TallyResult::Failed(format!("Unexpected vote type. Expected: Default, Found: {}", delegator_vote)),
+                            total_voting_power: total_stake,
+                            total_yay_power: 0,
+                            total_nay_power: 0}
                     }
                 }
             }
 
-            Ok(Tally::Default(
-                total_yay_staked_tokens >= 2 / 3 * total_stake,
-            ))
+            // Proposal passes if 2/3 of total voting power voted Yay
+            if total_yay_staked_tokens >= 2 / 3 * total_stake {
+               ProposalResult {
+                        result:  TallyResult::Passed(Tally::Default),
+                        total_voting_power: total_stake,
+                        total_yay_power: total_yay_staked_tokens,
+                        total_nay_power: 0}
+            } else {
+               ProposalResult{
+                            result:  TallyResult::Rejected,
+                            total_voting_power: total_stake,
+                            total_yay_power: total_yay_staked_tokens,
+                            total_nay_power: 0
+                            }
+            }
         }
         ProposalType::PGFCouncil => {
             let mut total_yay_staked_tokens = HashMap::new();
-            for (_, (amount, vote)) in yay_validators.iter() {
-                if let ProposalVote::Yay(VoteType::PGFCouncil(votes)) = vote {
+            for (_, (amount, validator_vote)) in yay_validators.iter() {
+                if let ProposalVote::Yay(VoteType::PGFCouncil(votes)) =
+                    validator_vote
+                {
                     for v in votes {
                         *total_yay_staked_tokens.entry(v).or_insert(0) +=
                             amount;
                     }
                 } else {
-                    return Err(storage_api::Error::SimpleMessage(
-                        "Unexpected vote type",
-                    ));
+                    return ProposalResult {
+                            result: TallyResult::Failed(format!(
+                        "Unexpected vote type. Expected: PGFCouncil, Found: {}",
+                        validator_vote
+                    )),
+                            total_voting_power: total_stake,
+                            total_yay_power: 0,
+                            total_nay_power: 0}
                 }
             }
 
@@ -193,7 +216,12 @@ where
                                             {
                                                 *power -= vote_power;
                                             } else {
-                                                return Err(storage_api::Error::SimpleMessage("Expected PGF vote was not in tally"));
+                                                return ProposalResult {
+                                                    result: TallyResult::Failed(format!("Expected PGF vote {:?} was not in tally", vote)),
+                                                    total_voting_power: total_stake,
+                                                    total_yay_power: 0,
+                                                    total_nay_power: 0}
+                                            
                                             }
                                         } else {
                                             // Validator didn't vote for this, add voting power
@@ -203,11 +231,12 @@ where
                                         }
                                     }
                                 } else {
-                                    return Err(
-                                        storage_api::Error::SimpleMessage(
-                                            "Unexpected vote type",
-                                        ),
-                                    );
+                                    return ProposalResult {
+                                        
+                                        result: TallyResult::Failed(format!("Unexpected vote type. Expected: PGFCouncil, Found: {}", validator_vote)),
+                                            total_voting_power: total_stake,
+                                            total_yay_power: 0,
+                                            total_nay_power: 0}
                                 }
                             }
                             None => {
@@ -221,9 +250,11 @@ where
                             }
                         }
                     } else {
-                        return Err(storage_api::Error::SimpleMessage(
-                            "Unexpected vote type",
-                        ));
+                        return ProposalResult{
+                                result:  TallyResult::Failed(format!("Unexpected vote type. Expected: PGFCouncil, Found: {}", delegator_vote)),
+                                total_voting_power: total_stake,
+                                total_yay_power: 0,
+                                total_nay_power: 0}
                     }
                 }
             }
@@ -247,13 +278,19 @@ where
                                     {
                                         *power -= vote_power;
                                     } else {
-                                        return Err(storage_api::Error::SimpleMessage("Expected PGF vote was not in tally"));
+                                        return ProposalResult{
+                                            result:  TallyResult::Failed(format!("Expected PGF vote {:?} was not in tally", vote)),
+                                            total_voting_power: total_stake,
+                                            total_yay_power: 0,
+                                            total_nay_power: 0}
                                     }
                                 }
                             } else {
-                                return Err(storage_api::Error::SimpleMessage(
-                                    "Unexpected vote type",
-                                ));
+ return ProposalResult{
+                                result:  TallyResult::Failed(format!("Unexpected vote type. Expected: PGFCouncil, Found: {}", validator_vote)),
+                                total_voting_power: total_stake,
+                                total_yay_power: 0,
+                                total_nay_power: 0}
                             }
                         }
                     }
@@ -265,16 +302,26 @@ where
                 .iter()
                 .fold(0, |acc, (_, vote_power)| acc + vote_power);
 
-            if total_yay_voted_power >= 1 / 3 * total_stake {
-                // Select the winner council based on simple majority
-                Ok(Tally::PGFCouncil(
-                    total_yay_staked_tokens
+            match total_yay_voted_power.checked_mul(3) {
+                Some(v) if v < total_stake => ProposalResult{
+                        result: TallyResult::Rejected,
+                        total_voting_power: total_stake,
+                        total_yay_power: total_yay_voted_power,
+                        total_nay_power: 0},
+                _ => {
+                    // Select the winner council based on simple majority
+                    let council = total_yay_staked_tokens
                         .into_iter()
                         .max_by(|a, b| a.1.cmp(&b.1))
-                        .map_or(None, |(vote, _)| Some(vote.to_owned())),
-                ))
-            } else {
-                Ok(Tally::PGFCouncil(None))
+                        .map(|(vote, _)| vote.to_owned())
+                        .unwrap(); // Cannot be None at this point
+
+                    ProposalResult{
+                            result: TallyResult::Passed(Tally::PGFCouncil(council)),
+                            total_voting_power: total_stake,
+                            total_yay_power: total_yay_voted_power,
+                            total_nay_power: 0}
+                }
             }
         }
     }

@@ -10,6 +10,7 @@ use namada::ledger::native_vp::governance::utils::{
 use namada::ledger::protocol;
 use namada::ledger::storage::types::encode;
 use namada::ledger::storage::{DBIter, StorageHasher, DB};
+use namada::proof_of_stake::PosReadOnly;
 use namada::types::address::Address;
 use namada::types::governance::{Tally, TallyResult};
 use namada::types::storage::Epoch;
@@ -58,136 +59,102 @@ where
                 Error::BadProposal(id, "Invalid proposal type".to_string())
             })?;
 
-        let votes = get_proposal_votes(&shell.storage, proposal_end_epoch, id);
-        let tally_result = votes.and_then(|votes| {
-            compute_tally(
-                &shell.storage,
-                proposal_end_epoch,
-                votes,
-                &proposal_type,
-            )
-        });
+        let votes = get_proposal_votes(&shell.storage, proposal_end_epoch, id)
+            .map_err(|msg| Error::BadProposal(id, msg.to_string()))?;
+        let total_stake = shell
+            .storage
+            .total_stake(proposal_end_epoch)
+            .map_err(|msg| Error::BadProposal(id, msg.to_string()))?
+            .into();
+        let tally_result =
+            compute_tally(votes, total_stake, &proposal_type).result;
 
         // Execute proposal if succesful
         let transfer_address = match tally_result {
-            Ok(result) => {
-                match result {
-                    Tally::Default(success) => {
-                        if success {
-                            let proposal_author_key =
-                                gov_storage::get_author_key(id);
-                            let proposal_author = shell
-                                .read_storage_key::<Address>(
-                                    &proposal_author_key,
+            TallyResult::Passed(tally) => {
+                match tally {
+                    Tally::Default => {
+                        let proposal_author_key =
+                            gov_storage::get_author_key(id);
+                        let proposal_author = shell
+                            .read_storage_key::<Address>(&proposal_author_key)
+                            .ok_or_else(|| {
+                                Error::BadProposal(
+                                    id,
+                                    "Invalid proposal author.".to_string(),
                                 )
-                                .ok_or_else(|| {
-                                    Error::BadProposal(
-                                        id,
-                                        "Invalid proposal author.".to_string(),
-                                    )
-                                })?;
+                            })?;
 
-                            let proposal_code_key =
-                                gov_storage::get_proposal_code_key(id);
-                            let proposal_code = shell
-                                .read_storage_key_bytes(&proposal_code_key);
-                            match proposal_code {
-                                Some(proposal_code) => {
-                                    let tx = Tx::new(
-                                        proposal_code,
-                                        Some(encode(&id)),
+                        let proposal_code_key =
+                            gov_storage::get_proposal_code_key(id);
+                        let proposal_code =
+                            shell.read_storage_key_bytes(&proposal_code_key);
+                        match proposal_code {
+                            Some(proposal_code) => {
+                                let tx =
+                                    Tx::new(proposal_code, Some(encode(&id)));
+                                let tx_type =
+                                    TxType::Decrypted(DecryptedTx::Decrypted {
+                                        tx,
+                                        #[cfg(not(feature = "mainnet"))]
+                                        has_valid_pow: false,
+                                    });
+                                let pending_execution_key =
+                                    gov_storage::get_proposal_execution_key(id);
+                                shell
+                                    .storage
+                                    .write(&pending_execution_key, "")
+                                    .expect(
+                                        "Should be able to write to storage.",
                                     );
-                                    let tx_type = TxType::Decrypted(
-                                        DecryptedTx::Decrypted {
-                                            tx,
-                                            #[cfg(not(feature = "mainnet"))]
-                                            has_valid_pow: false,
-                                        },
+                                let tx_result = protocol::apply_tx(
+                                    tx_type,
+                                    0, /*  this is used to compute the fee
+                                        * based on the code size. We dont
+                                        * need it here. */
+                                    TxIndex::default(),
+                                    &mut BlockGasMeter::default(),
+                                    &mut shell.write_log,
+                                    &shell.storage,
+                                    &mut shell.vp_wasm_cache,
+                                    &mut shell.tx_wasm_cache,
+                                );
+                                shell
+                                    .storage
+                                    .delete(&pending_execution_key)
+                                    .expect(
+                                        "Should be able to delete the storage.",
                                     );
-                                    let pending_execution_key =
-                                        gov_storage::get_proposal_execution_key(
-                                            id,
-                                        );
-                                    shell
-                            .storage
-                            .write(&pending_execution_key, "")
-                            .expect("Should be able to write to storage.");
-                                    let tx_result = protocol::apply_tx(
-                                        tx_type,
-                                        0, /*  this is used to compute the fee
-                                            * based on the code size. We dont
-                                            * need it here. */
-                                        TxIndex::default(),
-                                        &mut BlockGasMeter::default(),
-                                        &mut shell.write_log,
-                                        &shell.storage,
-                                        &mut shell.vp_wasm_cache,
-                                        &mut shell.tx_wasm_cache,
-                                    );
-                                    shell
-                            .storage
-                            .delete(&pending_execution_key)
-                            .expect("Should be able to delete the storage.");
-                                    match tx_result {
-                                        Ok(tx_result) => {
-                                            if tx_result.is_accepted() {
-                                                shell.write_log.commit_tx();
-                                                let proposal_event: Event =
-                                                    ProposalEvent::new(
-                                                        EventType::Proposal
-                                                            .to_string(),
-                                                        TallyResult::Passed(
-                                                            Tally::Default(
-                                                                true,
-                                                            ),
-                                                        ),
-                                                        id,
-                                                        true,
-                                                        true,
-                                                    )
-                                                    .into();
-                                                response
-                                                    .events
-                                                    .push(proposal_event);
-                                                proposals_result
-                                                    .passed
-                                                    .push(id);
+                                match tx_result {
+                                    Ok(tx_result) => {
+                                        if tx_result.is_accepted() {
+                                            shell.write_log.commit_tx();
+                                            let proposal_event: Event =
+                                                ProposalEvent::new(
+                                                    EventType::Proposal
+                                                        .to_string(),
+                                                    TallyResult::Passed(
+                                                        Tally::Default,
+                                                    ),
+                                                    id,
+                                                    true,
+                                                    true,
+                                                )
+                                                .into();
+                                            response
+                                                .events
+                                                .push(proposal_event);
+                                            proposals_result.passed.push(id);
 
-                                                proposal_author
-                                            } else {
-                                                shell.write_log.drop_tx();
-                                                let proposal_event: Event =
-                                                    ProposalEvent::new(
-                                                        EventType::Proposal
-                                                            .to_string(),
-                                                        TallyResult::Passed(
-                                                            Tally::Default(
-                                                                true,
-                                                            ),
-                                                        ),
-                                                        id,
-                                                        true,
-                                                        false,
-                                                    )
-                                                    .into();
-                                                response
-                                                    .events
-                                                    .push(proposal_event);
-                                                proposals_result
-                                                    .rejected
-                                                    .push(id);
-
-                                                slash_fund_address
-                                            }
-                                        }
-                                        Err(_e) => {
+                                            proposal_author
+                                        } else {
                                             shell.write_log.drop_tx();
                                             let proposal_event: Event =
                                                 ProposalEvent::new(
                                                     EventType::Proposal
                                                         .to_string(),
                                                     TallyResult::Passed(
-                                                        Tally::Default(true),
+                                                        Tally::Default,
                                                     ),
                                                     id,
                                                     true,
@@ -202,38 +169,40 @@ where
                                             slash_fund_address
                                         }
                                     }
-                                }
-                                None => {
-                                    let proposal_event: Event =
-                                        ProposalEvent::new(
-                                            EventType::Proposal.to_string(),
-                                            TallyResult::Passed(
-                                                Tally::Default(true),
-                                            ),
-                                            id,
-                                            false,
-                                            false,
-                                        )
-                                        .into();
-                                    response.events.push(proposal_event);
-                                    proposals_result.passed.push(id);
+                                    Err(_e) => {
+                                        shell.write_log.drop_tx();
+                                        let proposal_event: Event =
+                                            ProposalEvent::new(
+                                                EventType::Proposal.to_string(),
+                                                TallyResult::Passed(
+                                                    Tally::Default,
+                                                ),
+                                                id,
+                                                true,
+                                                false,
+                                            )
+                                            .into();
+                                        response.events.push(proposal_event);
+                                        proposals_result.rejected.push(id);
 
-                                    proposal_author
+                                        slash_fund_address
+                                    }
                                 }
                             }
-                        } else {
-                            let proposal_event: Event = ProposalEvent::new(
-                                EventType::Proposal.to_string(),
-                                TallyResult::Rejected,
-                                id,
-                                false,
-                                false,
-                            )
-                            .into();
-                            response.events.push(proposal_event);
-                            proposals_result.rejected.push(id);
+                            None => {
+                                let proposal_event: Event = ProposalEvent::new(
+                                    EventType::Proposal.to_string(),
+                                    TallyResult::Passed(Tally::Default),
+                                    id,
+                                    false,
+                                    false,
+                                )
+                                .into();
+                                response.events.push(proposal_event);
+                                proposals_result.passed.push(id);
 
-                            slash_fund_address
+                                proposal_author
+                            }
                         }
                     }
                     Tally::PGFCouncil(_council) => {
@@ -242,14 +211,28 @@ where
                     }
                 }
             }
-            Err(err) => {
+            TallyResult::Rejected => {
+                let proposal_event: Event = ProposalEvent::new(
+                    EventType::Proposal.to_string(),
+                    TallyResult::Rejected,
+                    id,
+                    false,
+                    false,
+                )
+                .into();
+                response.events.push(proposal_event);
+                proposals_result.rejected.push(id);
+
+                slash_fund_address
+            }
+            TallyResult::Failed(msg) => {
                 tracing::error!(
                     "Unexpectedly failed to tally proposal ID {id} with error \
-                     {err}"
+                     {msg}"
                 );
                 let proposal_event: Event = ProposalEvent::new(
                     EventType::Proposal.to_string(),
-                    TallyResult::Failed,
+                    TallyResult::Failed(msg),
                     id,
                     false,
                     false,
