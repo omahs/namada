@@ -31,7 +31,7 @@ use rayon::prelude::ParallelSlice;
 use thiserror::Error;
 pub use traits::{Sha256Hasher, StorageHasher};
 pub use wl_storage::{
-    iter_prefix_post, iter_prefix_pre, PrefixIter, WlStorage,
+    iter_prefix_post, iter_prefix_pre, PrefixIter, TempWlStorage, WlStorage,
 };
 
 use crate::ledger::gas::MIN_STORAGE_GAS;
