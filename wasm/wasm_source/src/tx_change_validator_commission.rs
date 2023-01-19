@@ -54,7 +54,7 @@ mod tests {
             commission_state_change in arb_commission_info(),
             // A key to sign the transaction
             key in arb_common_keypair(),
-            pos_params in arb_pos_params()) {
+            pos_params in arb_pos_params(None)) {
             test_tx_change_validator_commission_aux(commission_state_change.2, commission_state_change.0, commission_state_change.1, key, pos_params).unwrap()
         }
     }

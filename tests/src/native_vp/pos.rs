@@ -337,7 +337,7 @@ mod tests {
         type Transition = Transition;
 
         fn init_state() -> BoxedStrategy<Self::State> {
-            (arb_pos_params(), 0..100_u64)
+            (arb_pos_params(None), 0..100_u64)
                 .prop_flat_map(|(params, epoch)| {
                     // We're starting from an empty state
                     let state = vec![];

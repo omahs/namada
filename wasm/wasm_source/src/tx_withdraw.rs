@@ -55,7 +55,7 @@ mod tests {
         withdraw in arb_withdraw(),
         // A key to sign the transaction
         key in arb_common_keypair(),
-        pos_params in arb_pos_params()) {
+        pos_params in arb_pos_params(None)) {
             test_tx_withdraw_aux(initial_stake, unbonded_amount, withdraw, key,
                 pos_params).unwrap()
         }

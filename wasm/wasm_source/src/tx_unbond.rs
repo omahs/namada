@@ -58,7 +58,7 @@ mod tests {
         (initial_stake, unbond) in arb_initial_stake_and_unbond(),
         // A key to sign the transaction
         key in arb_common_keypair(),
-        pos_params in arb_pos_params()) {
+        pos_params in arb_pos_params(None)) {
             test_tx_unbond_aux(initial_stake, unbond, key, pos_params).unwrap()
         }
     }

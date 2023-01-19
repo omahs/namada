@@ -683,7 +683,7 @@ mod tests {
         fn init_state() -> BoxedStrategy<Self::State> {
             prop_oneof![
                 // Initialized at genesis
-                (arb_pos_params(), 0_u64..1_000_000, any::<u64>()).prop_map(
+                (arb_pos_params(None), 0_u64..1_000_000, any::<u64>()).prop_map(
                     |(params, epoch, initial)| {
                         let mut data = HashMap::default();
                         data.insert(epoch.into(), initial);
@@ -696,7 +696,7 @@ mod tests {
                     }
                 ),
                 // Initialized after genesis
-                (arb_pos_params(), 0_u64..1_000_000, any::<u64>()).prop_map(
+                (arb_pos_params(None), 0_u64..1_000_000, any::<u64>()).prop_map(
                     |(params, epoch, initial)| {
                         let offset = Offset::value(&params);
                         let mut data = HashMap::default();
@@ -1016,7 +1016,7 @@ mod tests {
         fn init_state() -> BoxedStrategy<Self::State> {
             prop_oneof![
                 // Initialized at genesis
-                (arb_pos_params(), arb_epoch(0..1_000_000), 1..10_000_000_u64)
+                (arb_pos_params(None), arb_epoch(0..1_000_000), 1..10_000_000_u64)
                     .prop_map(|(params, epoch, initial)| {
                         let mut data = HashMap::default();
                         data.insert(epoch, initial);
@@ -1028,7 +1028,7 @@ mod tests {
                         }
                     }),
                 // Initialized after genesis
-                (arb_pos_params(), arb_epoch(0..1_000_000), 1..10_000_000_u64)
+                (arb_pos_params(None), arb_epoch(0..1_000_000), 1..10_000_000_u64)
                     .prop_map(|(params, epoch, initial)| {
                         let offset = Offset::value(&params);
                         let mut data = HashMap::default();
