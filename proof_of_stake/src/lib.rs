@@ -20,6 +20,9 @@ pub mod storage;
 pub mod types;
 pub mod validation;
 
+#[cfg(test)]
+mod tests;
+
 use core::fmt::Debug;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
