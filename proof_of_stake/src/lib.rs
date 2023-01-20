@@ -1934,8 +1934,9 @@ where
     credit_tokens(storage, &staking_token_address(), &ADDRESS, total_bonded);
     // Copy the genesis validator set into the pipeline epoch as well
     for epoch in (current_epoch.next()).iter_range(params.pipeline_len) {
-        copy_validator_sets(
+        copy_validator_sets_and_positions(
             storage,
+            current_epoch,
             epoch,
             &active_validator_set_handle(),
             &inactive_validator_set_handle(),
@@ -2064,6 +2065,8 @@ where
 }
 
 /// Read PoS validator's stake (sum of deltas).
+/// Returns `None` when the given address is not a validator address. For a
+/// validator with `0` stake, this returns `Ok(token::Amount::default())`.
 pub fn read_validator_stake<S>(
     storage: &S,
     params: &PosParams,
@@ -2106,14 +2109,15 @@ pub fn read_total_stake<S>(
     storage: &S,
     params: &PosParams,
     epoch: namada_core::types::storage::Epoch,
-) -> storage_api::Result<Option<token::Amount>>
+) -> storage_api::Result<token::Amount>
 where
     S: StorageRead,
 {
     let handle = total_deltas_handle();
     let amnt = handle
         .get_sum(storage, epoch, params)?
-        .map(token::Amount::from_change);
+        .map(token::Amount::from_change)
+        .unwrap_or_default();
     Ok(amnt)
 }
 
@@ -2311,9 +2315,10 @@ where
     let amount = amount.change();
     println!("BONDING TOKEN AMOUNT {}\n", amount);
     let params = read_pos_params(storage)?;
+    let pipeline_epoch = current_epoch + params.pipeline_len;
     if let Some(source) = source {
         if source != validator
-            && is_validator(storage, source, &params, current_epoch)?
+            && is_validator(storage, source, &params, pipeline_epoch)?
         {
             return Err(
                 BondError::SourceMustNotBeAValidator(source.clone()).into()
@@ -2324,7 +2329,7 @@ where
     // Think if the 'get' here needs to be amended.
     let state = validator_state_handle(validator).get(
         storage,
-        current_epoch,
+        pipeline_epoch,
         &params,
     )?;
     if state.is_none() {
@@ -2387,15 +2392,15 @@ where
 
     dbg!(&current_epoch);
 
-    for ep in (current_epoch - 1_u64).iter_range(params.unbonding_len + 2) {
-        println!(
-            "bond delta at epoch {}: {}",
-            ep,
-            bond_remain_handle
-                .get_delta_val(storage, ep, &params)?
-                .unwrap_or_default()
-        )
-    }
+    // for ep in (current_epoch - 1_u64).iter_range(params.unbonding_len + 2) {
+    //     println!(
+    //         "bond delta at epoch {}: {}",
+    //         ep,
+    //         bond_remain_handle
+    //             .get_delta_val(storage, ep, &params)?
+    //             .unwrap_or_default()
+    //     )
+    // }
 
     println!("\nUPDATING VALIDATOR SET NOW\n");
 
@@ -2486,7 +2491,9 @@ where
         return Ok(());
     }
     let epoch = current_epoch + params.pipeline_len;
-    println!("Update epoch for validator set: {epoch}\n");
+    println!(
+        "Update epoch for validator set: {epoch}, validator: {validator}\n"
+    );
 
     // Validator sets at the pipeline offset. If these are empty, then we need
     // to copy over the most recent filled validator set into this epoch first
@@ -2506,6 +2513,9 @@ where
     // validator_set_positions_handle().at(&current_epoch).get(storage,
     // validator)
 
+    // TODO: The position is only set when the validator is in active or
+    // inactive set (consensus or below_capacity in the new names, but not
+    // in below_threshold set)
     let position =
         read_validator_set_position(storage, validator, epoch, params)?
             .ok_or_err_msg(
@@ -2634,10 +2644,11 @@ where
     Ok(())
 }
 
-/// Validator set copying into a future epoch
-pub fn copy_validator_sets<S>(
+/// Validator sets and positions copying into a future epoch
+pub fn copy_validator_sets_and_positions<S>(
     storage: &mut S,
-    epoch: Epoch,
+    current_epoch: Epoch,
+    target_epoch: Epoch,
     active_validator_set: &ActiveValidatorSetsNew,
     inactive_validator_set: &InactiveValidatorSetsNew,
 ) -> storage_api::Result<()>
@@ -2648,71 +2659,75 @@ where
     // needs to be copied (it may truly be empty after having one time contained
     // validators in the past)
 
-    let mut search_epoch = epoch - 1;
-    loop {
-        let (active, inactive) = (
-            active_validator_set.at(&search_epoch),
-            inactive_validator_set.at(&search_epoch),
-        );
-        if active.is_empty(storage)? && inactive.is_empty(storage)? {
-            search_epoch = search_epoch - 1;
-        } else {
-            debug_assert!(!active.is_empty(storage)?);
-            // debug_assert!(!inactive.is_empty(storage)?);
+    let mut prev_epoch = target_epoch - 1;
+    let (active, inactive) = (
+        active_validator_set.at(&prev_epoch),
+        inactive_validator_set.at(&prev_epoch),
+    );
+    debug_assert!(!active.is_empty(storage)?);
+    // debug_assert!(!inactive.is_empty(storage)?);
 
-            // Need to copy into memory here to avoid borrowing a ref
-            // simultaneously as immutable and mutable
-            let mut active_in_mem: HashMap<(token::Amount, Position), Address> =
-                HashMap::new();
-            let mut inactive_in_mem: HashMap<
-                (ReverseOrdTokenAmount, Position),
-                Address,
-            > = HashMap::new();
+    // Need to copy into memory here to avoid borrowing a ref
+    // simultaneously as immutable and mutable
+    let mut active_in_mem: HashMap<(token::Amount, Position), Address> =
+        HashMap::new();
+    let mut inactive_in_mem: HashMap<
+        (ReverseOrdTokenAmount, Position),
+        Address,
+    > = HashMap::new();
 
-            for val in active.iter(storage)? {
-                let (
-                    NestedSubKey::Data {
-                        key: stake,
-                        nested_sub_key: SubKey::Data(position),
-                    },
-                    address,
-                ) = val?;
-                active_in_mem.insert((stake, position), address);
-            }
-            for val in inactive.iter(storage)? {
-                let (
-                    NestedSubKey::Data {
-                        key: stake,
-                        nested_sub_key: SubKey::Data(position),
-                    },
-                    address,
-                ) = val?;
-                inactive_in_mem.insert((stake, position), address);
-            }
-            // dbg!(&search_epoch);
-            // dbg!(&active_in_mem);
-
-            for ((val_stake, val_position), val_address) in
-                active_in_mem.into_iter()
-            {
-                active_validator_set.at(&epoch).at(&val_stake).insert(
-                    storage,
-                    val_position,
-                    val_address,
-                )?;
-            }
-            for ((val_stake, val_position), val_address) in
-                inactive_in_mem.into_iter()
-            {
-                inactive_validator_set.at(&epoch).at(&val_stake).insert(
-                    storage,
-                    val_position,
-                    val_address,
-                )?;
-            }
-            break;
-        }
+    for val in active.iter(storage)? {
+        let (
+            NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: SubKey::Data(position),
+            },
+            address,
+        ) = val?;
+        active_in_mem.insert((stake, position), address);
     }
+    for val in inactive.iter(storage)? {
+        let (
+            NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: SubKey::Data(position),
+            },
+            address,
+        ) = val?;
+        inactive_in_mem.insert((stake, position), address);
+    }
+    // dbg!(&search_epoch);
+    // dbg!(&active_in_mem);
+
+    for ((val_stake, val_position), val_address) in active_in_mem.into_iter() {
+        active_validator_set
+            .at(&target_epoch)
+            .at(&val_stake)
+            .insert(storage, val_position, val_address)?;
+    }
+    for ((val_stake, val_position), val_address) in inactive_in_mem.into_iter()
+    {
+        inactive_validator_set
+            .at(&target_epoch)
+            .at(&val_stake)
+            .insert(storage, val_position, val_address)?;
+    }
+
+    // Copy validator positions
+    let mut positions = HashMap::<Address, Position>::default();
+    let positions_handle = validator_set_positions_handle().at(&prev_epoch);
+    for result in positions_handle.iter(storage)? {
+        let (validator, position) = result?;
+        positions.insert(validator, position);
+    }
+    let new_positions_handle =
+        validator_set_positions_handle().at(&target_epoch);
+    for (validator, position) in positions {
+        let prev = new_positions_handle.insert(storage, validator, position)?;
+        debug_assert!(prev.is_none());
+    }
+    validator_set_positions_handle().set_last_update(storage, current_epoch)?;
+
     Ok(())
 }
 
@@ -2845,45 +2860,39 @@ where
     let amount = amount.change();
     println!("UNBONDING TOKEN AMOUNT {amount} at epoch {current_epoch}\n");
     let params = read_pos_params(storage)?;
+    let pipeline_epoch = current_epoch + params.pipeline_len;
     println!(
         "Current validator stake at pipeline: {}",
-        read_validator_stake(
-            storage,
-            &params,
-            validator,
-            current_epoch + params.pipeline_len
-        )?
-        .unwrap_or_default()
+        read_validator_stake(storage, &params, validator, pipeline_epoch)?
+            .unwrap_or_default()
     );
 
     if let Some(source) = source {
         if source != validator
-            && is_validator(storage, source, &params, current_epoch)?
+            && is_validator(storage, source, &params, pipeline_epoch)?
         {
             return Err(
                 BondError::SourceMustNotBeAValidator(source.clone()).into()
             );
         }
     }
-    let state = validator_state_handle(validator).get(
-        storage,
-        current_epoch,
-        &params,
-    )?;
-    if state.is_none() {
+    if !is_validator(storage, validator, &params, pipeline_epoch)? {
         return Err(BondError::NotAValidator(validator.clone()).into());
     }
 
+    // Should be able to unbond inactive validators, but we'll need to prevent
+    // jailed unbonding with slashing
+
     // Check that validator is not inactive at anywhere between the current
     // epoch and pipeline offset
-    let validator_state_handle = validator_state_handle(validator);
-    for epoch in current_epoch.iter_range(params.pipeline_len) {
-        if let Some(ValidatorState::Inactive) =
-            validator_state_handle.get(storage, epoch, &params)?
-        {
-            return Err(BondError::InactiveValidator(validator.clone()).into());
-        }
-    }
+    // let validator_state_handle = validator_state_handle(validator);
+    // for epoch in current_epoch.iter_range(params.pipeline_len) {
+    //     if let Some(ValidatorState::Inactive) =
+    //         validator_state_handle.get(storage, epoch, &params)?
+    //     {
+    //         return
+    // Err(BondError::InactiveValidator(validator.clone()).into());     }
+    // }
 
     let source = source.unwrap_or(validator);
     let _bond_amount_handle = bond_handle(source, validator, false);
@@ -3103,33 +3112,28 @@ where
 
     let slashes = validator_slashes_handle(validator);
     // TODO: need some error handling to determine if this unbond even exists?
+    // A handle to an empty location is valid - we just won't see any data
     let unbond_handle = unbond_handle(source, validator);
 
     let mut slashed = token::Amount::default();
     let mut withdrawable_amount = token::Amount::default();
     let mut unbonds_to_remove: Vec<(Epoch, Epoch)> = Vec::new();
     let mut unbond_iter = unbond_handle.iter(storage)?;
-    loop {
-        let unbond = unbond_iter.next().transpose()?;
-        if unbond.is_none() {
-            continue;
-        }
-        let unbond_info = unbond.map(|(a, b)| match a {
+    for unbond in unbond_iter {
+        let (
             NestedSubKey::Data {
-                key,
-                nested_sub_key,
-            } => match nested_sub_key {
-                SubKey::Data(val) => ((key, val), b),
+                key: end_epoch,
+                nested_sub_key: SubKey::Data(start_epoch),
             },
-        });
-        let ((end_epoch, start_epoch), amount) = unbond_info.unwrap();
+            amount,
+        ) = unbond?;
 
         // TODO: worry about updating this later after PR 740 perhaps
         // 1. cubic slashing
         // 2. adding slash rates in same epoch, applying cumulatively in dif
         // epochs
         if end_epoch > current_epoch {
-            break;
+            continue;
         }
         for slash in slashes.iter(storage)? {
             let SlashNew {
@@ -3149,7 +3153,6 @@ where
             }
         }
     }
-    drop(unbond_iter);
 
     // Remove the unbond data from storage
     for (end_epoch, start_epoch) in unbonds_to_remove {

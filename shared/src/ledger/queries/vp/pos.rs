@@ -4,8 +4,9 @@ use namada_core::ledger::storage_api::collections::lazy_map;
 use namada_core::ledger::storage_api::OptionExt;
 use namada_proof_of_stake::types::WeightedValidatorNew;
 use namada_proof_of_stake::{
-    self, active_validator_set_handle, inactive_validator_set_handle,
-    unbond_handle, PosReadOnly,
+    self, active_validator_set_handle, bond_handle,
+    inactive_validator_set_handle, read_pos_params, read_total_stake,
+    read_validator_stake, unbond_handle, PosReadOnly,
 };
 
 use crate::ledger::pos::{self, BondId};
@@ -25,7 +26,7 @@ router! {POS,
             -> HashSet<Address> = validator_addresses,
 
         ( "stake" / [validator: Address] / [epoch: opt Epoch] )
-            -> token::Amount = validator_stake,
+            -> Option<token::Amount> = validator_stake,
     },
 
     ( "validator_set" ) = {
@@ -92,23 +93,28 @@ where
     H: 'static + StorageHasher + Sync,
 {
     let epoch = epoch.unwrap_or(ctx.wl_storage.storage.last_epoch);
+
+    // TODO update
     ctx.wl_storage.validator_addresses(epoch)
 }
 
 /// Get the total stake of a validator at the given epoch or current when
 /// `None`. The total stake is a sum of validator's self-bonds and delegations
 /// to their address.
+/// Returns `None` when the given address is not a validator address. For a
+/// validator with `0` stake, this returns `Ok(token::Amount::default())`.
 fn validator_stake<D, H>(
     ctx: RequestCtx<'_, D, H>,
     validator: Address,
     epoch: Option<Epoch>,
-) -> storage_api::Result<token::Amount>
+) -> storage_api::Result<Option<token::Amount>>
 where
     D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
     H: 'static + StorageHasher + Sync,
 {
     let epoch = epoch.unwrap_or(ctx.wl_storage.storage.last_epoch);
-    ctx.wl_storage.validator_stake(&validator, epoch)
+    let params = read_pos_params(ctx.wl_storage)?;
+    read_validator_stake(ctx.wl_storage, &params, &validator, epoch)
 }
 
 /// Get all the validator in the active set with their bonded stake.
@@ -185,7 +191,8 @@ where
     H: 'static + StorageHasher + Sync,
 {
     let epoch = epoch.unwrap_or(ctx.wl_storage.storage.last_epoch);
-    ctx.wl_storage.total_stake(epoch)
+    let params = read_pos_params(ctx.wl_storage)?;
+    read_total_stake(ctx.wl_storage, &params, epoch)
 }
 
 /// TODO: new bond thing
@@ -200,9 +207,9 @@ where
     H: 'static + StorageHasher + Sync,
 {
     let epoch = dbg!(epoch.unwrap_or(ctx.wl_storage.storage.last_epoch));
-    let params = namada_proof_of_stake::read_pos_params(ctx.wl_storage)?;
+    let params = read_pos_params(ctx.wl_storage)?;
 
-    let handle = namada_proof_of_stake::bond_handle(&source, &validator, true);
+    let handle = bond_handle(&source, &validator, true);
     handle
         .get_sum(ctx.wl_storage, epoch, &params)?
         .map(token::Amount::from_change)
@@ -226,8 +233,8 @@ where
     for result in handle.iter(ctx.wl_storage)? {
         let (
             lazy_map::NestedSubKey::Data {
-                key: _start,
-                nested_sub_key: lazy_map::SubKey::Data(end),
+                key: end,
+                nested_sub_key: lazy_map::SubKey::Data(_start),
             },
             amount,
         ) = result?;
@@ -257,6 +264,7 @@ where
         source: owner,
         validator,
     };
+    // TODO update
     ctx.wl_storage.bond_amount(&bond_id, epoch)
 }
 /// Find all the validator addresses to whom the given `owner` address has
@@ -271,6 +279,7 @@ where
 {
     let bonds_prefix = pos::bonds_for_source_prefix(&owner);
 
+    // TODO update
     let mut delegations: HashSet<Address> = HashSet::new();
     for iter_result in
         storage_api::iter_prefix_bytes(ctx.wl_storage, &bonds_prefix)?

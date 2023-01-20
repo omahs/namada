@@ -73,8 +73,9 @@ where
                 current_epoch,
                 current_epoch + pos_params.pipeline_len
             );
-            namada_proof_of_stake::copy_validator_sets(
+            namada_proof_of_stake::copy_validator_sets_and_positions(
                 &mut self.wl_storage,
+                current_epoch,
                 current_epoch + pos_params.pipeline_len,
                 &namada_proof_of_stake::active_validator_set_handle(),
                 &namada_proof_of_stake::inactive_validator_set_handle(),

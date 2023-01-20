@@ -132,7 +132,7 @@ pub fn find_bonded_stake(
         ],
         Some(10)
     )?;
-    let (unread, matched) = find.exp_regex("bonded stake: .*")?;
+    let (unread, matched) = find.exp_regex("Bonded stake of validator .*")?;
     let bonded_stake_str = strip_trailing_newline(&matched)
         .trim()
         .rsplit_once(' ')

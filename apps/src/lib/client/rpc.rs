@@ -1759,32 +1759,15 @@ pub async fn query_bonded_stake(ctx: Context, args: args::QueryBondedStake) {
         Some(validator) => {
             let validator = ctx.get(&validator);
             // Find bonded stake for the given validator
-            let validator_deltas_key = pos::validator_deltas_key(&validator);
-            let validator_deltas = query_storage_value::<pos::ValidatorDeltas>(
-                &client,
-                &validator_deltas_key,
-            )
-            .await;
-            match validator_deltas.and_then(|data| data.get(epoch)) {
-                Some(val_stake) => {
-                    let bonded_stake: u64 = val_stake.try_into().expect(
-                        "The sum of the bonded stake deltas shouldn't be \
-                         negative",
-                    );
-                    let weighted = WeightedValidator {
-                        address: validator.clone(),
-                        bonded_stake,
-                    };
+            let stake = get_validator_stake(&client, epoch, &validator).await;
+            match stake {
+                Some(stake) => {
                     // TODO: show if it's in consensus set, below capacity, or
                     // below threshold set
-                    println!(
-                        "Bonded stake of validator {}: {}",
-                        validator.encode(),
-                        bonded_stake,
-                    )
+                    println!("Bonded stake of validator {validator}: {stake}",)
                 }
                 None => {
-                    println!("No bonded stake found for {}", validator.encode())
+                    println!("No bonded stake found for {validator}")
                 }
             }
         }
@@ -1830,19 +1813,9 @@ pub async fn query_bonded_stake(ctx: Context, args: args::QueryBondedStake) {
             }
         }
     }
-    let total_deltas_key = pos::total_deltas_key();
-    let total_deltas =
-        query_storage_value::<pos::TotalDeltas>(&client, &total_deltas_key)
-            .await
-            .expect("Total bonded stake should always be set");
-    let total_bonded_stake = total_deltas
-        .get(epoch)
-        .expect("Total bonded stake should be always set in the current epoch");
-    let total_bonded_stake: u64 = total_bonded_stake
-        .try_into()
-        .expect("total_bonded_stake should be a positive value");
 
-    println!("Total bonded stake: {}", total_bonded_stake);
+    let total_staked_tokens = get_total_staked_tokens(&client, epoch).await;
+    println!("Total bonded stake: {total_staked_tokens}");
 }
 
 /// Query PoS validator's commission rate
@@ -2600,6 +2573,7 @@ pub async fn get_proposal_votes(
                 let amount: VotePower =
                     get_validator_stake(client, epoch, &voter_address)
                         .await
+                        .unwrap_or_default()
                         .into();
                 yay_validators.insert(voter_address, amount);
             } else if !validators.contains(&voter_address) {
@@ -2680,6 +2654,7 @@ pub async fn get_proposal_offline_votes(
                 &proposal_vote.address,
             )
             .await
+            .unwrap_or_default()
             .into();
             yay_validators.insert(proposal_vote.address, amount);
         } else if is_delegator_at(
@@ -2897,11 +2872,15 @@ pub async fn get_total_staked_tokens(
     )
 }
 
+/// Get the total stake of a validator at the given epoch. The total stake is a
+/// sum of validator's self-bonds and delegations to their address.
+/// Returns `None` when the given address is not a validator address. For a
+/// validator with `0` stake, this returns `Ok(token::Amount::default())`.
 async fn get_validator_stake(
     client: &HttpClient,
     epoch: Epoch,
     validator: &Address,
-) -> token::Amount {
+) -> Option<token::Amount> {
     unwrap_client_response(
         RPC.vp()
             .pos()

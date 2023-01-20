@@ -294,6 +294,19 @@ where
     }
 
     /// TODO
+    pub fn set_last_update<S>(
+        &self,
+        storage: &mut S,
+        current_epoch: Epoch,
+    ) -> storage_api::Result<()>
+    where
+        S: StorageWrite + StorageRead,
+    {
+        let key = self.get_last_update_storage_key();
+        storage.write(&key, current_epoch)
+    }
+
+    /// TODO
     pub fn sub_past_epochs(epoch: Epoch) -> Epoch {
         Epoch(epoch.0.checked_sub(NUM_PAST_EPOCHS).unwrap_or_default())
     }
@@ -544,7 +557,11 @@ where
             if expected_oldest_epoch == last_update {
                 return Ok(());
             } else {
-                let diff = expected_oldest_epoch.0 - last_update.0;
+                dbg!(last_update, expected_oldest_epoch, current_epoch);
+                let diff = expected_oldest_epoch
+                    .0
+                    .checked_sub(last_update.0)
+                    .unwrap_or_default();
                 let data_handler = self.get_data_handler();
                 let mut new_oldest_value: Option<Data> = None;
                 for offset in 1..diff + 1 {
