@@ -1739,20 +1739,14 @@ pub fn validator_commission_rate_handle(
 }
 
 /// Get the storage handle to a bond
-pub fn bond_handle(
-    source: &Address,
-    validator: &Address,
-    get_remaining: bool,
-) -> BondsNew {
+/// TODO: remove `get_remaining` and the unused storage (maybe just call it
+/// `storage::bond_key`)
+pub fn bond_handle(source: &Address, validator: &Address) -> BondsNew {
     let bond_id = BondId {
         source: source.clone(),
         validator: validator.clone(),
     };
-    let key = if get_remaining {
-        storage::bond_remaining_key(&bond_id)
-    } else {
-        storage::bond_amount_key(&bond_id)
-    };
+    let key = storage::bond_key(&bond_id);
     BondsNew::open(key)
 }
 
@@ -1905,7 +1899,7 @@ where
         //     delta,
         //     current_epoch,
         // )?;
-        bond_handle(&address, &address, true).init_at_genesis(
+        bond_handle(&address, &address).init_at_genesis(
             storage,
             delta,
             current_epoch,
@@ -1931,7 +1925,7 @@ where
         current_epoch,
     )?;
     // Credit bonded token amount to the PoS account
-    credit_tokens(storage, &staking_token_address(), &ADDRESS, total_bonded);
+    credit_tokens(storage, &staking_token_address(), &ADDRESS, total_bonded)?;
     // Copy the genesis validator set into the pipeline epoch as well
     for epoch in (current_epoch.next()).iter_range(params.pipeline_len) {
         copy_validator_sets_and_positions(
@@ -1969,6 +1963,7 @@ pub fn write_pos_params<S>(
 where
     S: StorageRead + StorageWrite,
 {
+    println!("Write PoS params");
     let key = params_key();
     storage.write(&key, params)
 }
@@ -2339,7 +2334,7 @@ where
     let validator_state_handle = validator_state_handle(validator);
     let source = source.unwrap_or(validator);
     // let bond_amount_handle = bond_handle(source, validator, false);
-    let bond_remain_handle = bond_handle(source, validator, true);
+    let bond_remain_handle = bond_handle(source, validator);
 
     // Check that validator is not inactive at anywhere between the current
     // epoch and pipeline offset
@@ -2645,6 +2640,7 @@ where
 }
 
 /// Validator sets and positions copying into a future epoch
+/// TODO: do we need to copy positions?
 pub fn copy_validator_sets_and_positions<S>(
     storage: &mut S,
     current_epoch: Epoch,
@@ -2895,8 +2891,8 @@ where
     // }
 
     let source = source.unwrap_or(validator);
-    let _bond_amount_handle = bond_handle(source, validator, false);
-    let bond_remain_handle = bond_handle(source, validator, true);
+    let _bond_amount_handle = bond_handle(source, validator);
+    let bond_remain_handle = bond_handle(source, validator);
 
     // Make sure there are enough tokens left in the bond at the pipeline offset
     let pipeline_epoch = current_epoch + params.pipeline_len;
@@ -3348,8 +3344,8 @@ where
 {
     // TODO: review this logic carefully, do cubic slashing, apply rewards
     let slashes = validator_slashes_handle(&bond_id.validator);
-    let bonds = bond_handle(&bond_id.source, &bond_id.validator, true)
-        .get_data_handler();
+    let bonds =
+        bond_handle(&bond_id.source, &bond_id.validator).get_data_handler();
     let mut total = token::Amount::default();
     for next in bonds.iter(storage)? {
         let (bond_epoch, delta) = next?;

@@ -149,6 +149,9 @@ fn test_bonds_aux(
     mut params: PosParams,
     mut validators: Vec<GenesisValidator>,
 ) {
+    // This can be useful for debugging:
+    // params.pipeline_len = 2;
+    // params.unbonding_len = 4;
     println!("\nTest inputs: {params:?}, genesis validators: {validators:#?}");
     let mut s = TestWlStorage::default();
 
@@ -295,6 +298,9 @@ fn test_become_validator_aux(
     )
     .unwrap();
 
+    // Advance to epoch 2
+    current_epoch = advance_epoch(&mut s, &params);
+
     // Self-bond to the new validator
     let amount = token::Amount::from(100_500_000);
     credit_tokens(&mut s, &staking_token_address(), &new_validator, amount)
@@ -302,7 +308,7 @@ fn test_become_validator_aux(
     bond_tokens_new(&mut s, None, &new_validator, amount, current_epoch)
         .unwrap();
 
-    // Advance to epoch 2
+    // Advance to epoch 3
     current_epoch = advance_epoch(&mut s, &params);
 
     // Unbond the self-bond

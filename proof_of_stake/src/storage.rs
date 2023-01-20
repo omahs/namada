@@ -280,15 +280,15 @@ pub fn bond_amount_key(bond_id: &BondId) -> Key {
 
 /// Storage key for the remaining amount in the bond with a given ID (source and
 /// validator)
-pub fn bond_remaining_key(bond_id: &BondId) -> Key {
-    bond_key(bond_id)
-        .push(&BOND_REMAINING_STORAGE_KEY.to_owned())
-        .expect("Cannot obtain storage key")
-}
+// pub fn bond_key(bond_id: &BondId) -> Key {
+//     bond_key(bond_id)
+//         .push(&BOND_REMAINING_STORAGE_KEY.to_owned())
+//         .expect("Cannot obtain storage key")
+// }
 
 /// Is storage key for a bond?
 pub fn is_bond_key(key: &Key) -> Option<BondId> {
-    match &key.segments[..] {
+    match &key.segments[..4] {
         [
             DbKeySeg::AddressSeg(addr),
             DbKeySeg::StringSeg(prefix),

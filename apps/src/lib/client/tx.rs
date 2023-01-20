@@ -2393,7 +2393,7 @@ pub async fn submit_unbond(ctx: Context, args: args::Unbond) {
         source: bond_source.clone(),
         validator: validator.clone(),
     };
-    let bond_key = ledger::pos::bond_remaining_key(&bond_id);
+    let bond_key = ledger::pos::bond_key(&bond_id);
     let client = HttpClient::new(args.tx.ledger_address.clone()).unwrap();
     // let bonds = rpc::query_storage_value::<Bonds>(&client, &bond_key).await;
 

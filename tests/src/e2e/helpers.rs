@@ -13,6 +13,7 @@ use eyre::eyre;
 use namada::types::address::Address;
 use namada::types::key::*;
 use namada::types::storage::Epoch;
+use namada::types::token;
 use namada_apps::config::genesis::genesis_config;
 use namada_apps::config::{Config, TendermintMode};
 
@@ -119,7 +120,7 @@ pub fn find_bonded_stake(
     test: &Test,
     alias: impl AsRef<str>,
     ledger_address: &str,
-) -> Result<u64> {
+) -> Result<token::Amount> {
     let mut find = run!(
         test,
         Bin::Client,
@@ -138,7 +139,7 @@ pub fn find_bonded_stake(
         .rsplit_once(' ')
         .unwrap()
         .1;
-    u64::from_str(bonded_stake_str).map_err(|e| {
+    token::Amount::from_str(bonded_stake_str).map_err(|e| {
         eyre!(format!(
             "Bonded stake: {} parsed from {}, Error: {}\n\nOutput: {}",
             bonded_stake_str, matched, e, unread

@@ -47,11 +47,11 @@ router! {POS,
     ( "delegations" / [owner: Address] )
         -> HashSet<Address> = delegations,
 
-    ( "bond_amount" / [owner: Address] / [validator: Address] / [epoch: opt Epoch] )
-        -> token::Amount = bond_amount,
+    // ( "bond_amount" / [owner: Address] / [validator: Address] / [epoch: opt Epoch] )
+    //     -> token::Amount = bond_amount,
 
-    ( "bond_remaining" / [source: Address] / [validator: Address] / [epoch: opt Epoch] )
-        -> token::Amount = bond_remaining_new,
+    ( "bond" / [source: Address] / [validator: Address] / [epoch: opt Epoch] )
+        -> token::Amount = bond_new,
 
     ( "withdrawable_tokens" / [source: Address] / [validator: Address] / [epoch: opt Epoch] )
         -> token::Amount = withdrawable_tokens,
@@ -196,7 +196,7 @@ where
 }
 
 /// TODO: new bond thing
-fn bond_remaining_new<D, H>(
+fn bond_new<D, H>(
     ctx: RequestCtx<'_, D, H>,
     source: Address,
     validator: Address,
@@ -209,7 +209,7 @@ where
     let epoch = dbg!(epoch.unwrap_or(ctx.wl_storage.storage.last_epoch));
     let params = read_pos_params(ctx.wl_storage)?;
 
-    let handle = bond_handle(&source, &validator, true);
+    let handle = bond_handle(&source, &validator);
     handle
         .get_sum(ctx.wl_storage, epoch, &params)?
         .map(token::Amount::from_change)
@@ -245,28 +245,29 @@ where
     Ok(total)
 }
 
-/// Get the total bond amount for the given bond ID (this may be delegation or
-/// self-bond when `owner == validator`) at the given epoch, or the current
-/// epoch when `None`.
-fn bond_amount<D, H>(
-    ctx: RequestCtx<'_, D, H>,
-    owner: Address,
-    validator: Address,
-    epoch: Option<Epoch>,
-) -> storage_api::Result<token::Amount>
-where
-    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
-    H: 'static + StorageHasher + Sync,
-{
-    let epoch = epoch.unwrap_or(ctx.wl_storage.storage.last_epoch);
+// /// Get the total bond amount for the given bond ID (this may be delegation
+// or /// self-bond when `owner == validator`) at the given epoch, or the
+// current /// epoch when `None`.
+// fn bond_amount<D, H>(
+//     ctx: RequestCtx<'_, D, H>,
+//     owner: Address,
+//     validator: Address,
+//     epoch: Option<Epoch>,
+// ) -> storage_api::Result<token::Amount>
+// where
+//     D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+//     H: 'static + StorageHasher + Sync,
+// {
+//     let epoch = epoch.unwrap_or(ctx.wl_storage.storage.last_epoch);
 
-    let bond_id = BondId {
-        source: owner,
-        validator,
-    };
-    // TODO update
-    ctx.wl_storage.bond_amount(&bond_id, epoch)
-}
+//     let bond_id = BondId {
+//         source: owner,
+//         validator,
+//     };
+//     // TODO update
+//     ctx.wl_storage.bond_amount(&bond_id, epoch)
+// }
+
 /// Find all the validator addresses to whom the given `owner` address has
 /// some delegation in any epoch
 fn delegations<D, H>(
