@@ -206,7 +206,7 @@ where
                         }
                     }
                     Tally::PGFCouncil(_council) => {
-                        //TODO: implement when PGF is in place
+                        // TODO: implement when PGF is in place
                         todo!();
                     }
                 }
