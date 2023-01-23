@@ -27,7 +27,6 @@ use core::fmt::Debug;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::num::TryFromIntError;
-use std::ops::Mul;
 
 use epoched::{
     DynEpochOffset, EpochOffset, Epoched, EpochedDelta, OffsetPipelineLen,
@@ -40,9 +39,7 @@ use namada_core::ledger::storage_api::token::credit_tokens;
 use namada_core::ledger::storage_api::{
     self, OptionExt, StorageRead, StorageWrite,
 };
-use namada_core::types::address::{
-    self, Address, InternalAddress, POS_SLASH_POOL,
-};
+use namada_core::types::address::{self, Address, InternalAddress};
 use namada_core::types::key::{common, tm_consensus_key_raw_hash};
 pub use namada_core::types::storage::Epoch;
 use namada_core::types::token;
@@ -51,7 +48,7 @@ use rust_decimal::Decimal;
 use storage::{
     into_tm_voting_power, num_active_validators_key, params_key,
     validator_address_raw_hash_key, validator_max_commission_rate_change_key,
-    ReverseOrdTokenAmount,
+    ReverseOrdTokenAmount, WeightedValidatorNew,
 };
 use thiserror::Error;
 use types::{
@@ -1804,7 +1801,7 @@ where
     {
         total_bonded += tokens;
 
-        dbg!(&address, &tokens);
+        // dbg!(&address, &tokens);
 
         let active_val_handle =
             active_validator_set_handle().at(&current_epoch).at(&tokens);
@@ -1963,23 +1960,20 @@ pub fn write_pos_params<S>(
 where
     S: StorageRead + StorageWrite,
 {
-    println!("Write PoS params");
     let key = params_key();
     storage.write(&key, params)
 }
 
-/// Read PoS validator's address raw hash.
-pub fn read_validator_address_raw_hash<S>(
+/// Get the validator address given the raw hash of the Tendermint consensus key
+pub fn find_validator_by_raw_hash<S>(
     storage: &S,
-    validator: &Address,
+    raw_hash: impl AsRef<str>,
 ) -> storage_api::Result<Option<Address>>
 where
     S: StorageRead,
 {
-    let key = validator_address_raw_hash_key(validator.raw_hash().unwrap());
+    let key = validator_address_raw_hash_key(raw_hash);
     storage.read(&key)
-    // let value = storage.read_bytes(&key)?;
-    // Ok(value.map(|value| decode(value).unwrap()))
 }
 
 /// Write PoS validator's address raw hash.
@@ -2147,19 +2141,19 @@ where
             break;
         }
     }
-    dbg!(&addresses, &epoch);
+    // dbg!(&addresses, &epoch);
     Ok(addresses)
 }
 
 /// Read all addresses from active validator set with their stake.
 pub fn read_active_validator_set_addresses_with_stake<S>(
     storage: &S,
-    validator_set_handle: &ActiveValidatorSetsNew,
     epoch: namada_core::types::storage::Epoch,
-) -> storage_api::Result<HashSet<WeightedValidator>>
+) -> storage_api::Result<HashSet<WeightedValidatorNew>>
 where
     S: StorageRead,
 {
+    let validator_set_handle = active_validator_set_handle();
     // let mut addresses: HashSet<WeightedValidator> = HashSet::new();
 
     // validator_set_handle
@@ -2182,7 +2176,7 @@ where
     //     });
     // Ok(addresses)
 
-    let mut validator_set: HashSet<WeightedValidator> = HashSet::new();
+    let mut validator_set: HashSet<WeightedValidatorNew> = HashSet::new();
     let mut search_epoch = epoch.clone();
     loop {
         let validators = validator_set_handle.at(&search_epoch);
@@ -2192,14 +2186,14 @@ where
             validators.iter(storage)?.for_each(|res| {
                 if let Ok((
                     NestedSubKey::Data {
-                        key: stake,
+                        key: bonded_stake,
                         nested_sub_key: _,
                     },
                     address,
                 )) = res
                 {
-                    validator_set.insert(WeightedValidator {
-                        bonded_stake: u64::from(stake),
+                    validator_set.insert(WeightedValidatorNew {
+                        bonded_stake,
                         address,
                     });
                 }
@@ -2333,8 +2327,7 @@ where
 
     let validator_state_handle = validator_state_handle(validator);
     let source = source.unwrap_or(validator);
-    // let bond_amount_handle = bond_handle(source, validator, false);
-    let bond_remain_handle = bond_handle(source, validator);
+    let bond_handle = bond_handle(source, validator);
 
     // Check that validator is not inactive at anywhere between the current
     // epoch and pipeline offset
@@ -2350,52 +2343,21 @@ where
     let offset = params.pipeline_len;
     // TODO: ensure that this method of checking if the bond exists works
 
-    // dbg!(bond_amount_handle.get_last_update(storage).unwrap());
-
-    if !bond_remain_handle.get_data_handler().is_empty(storage)? {
+    if !bond_handle.get_data_handler().is_empty(storage)? {
         println!("BOND EXISTS TO BEGIN WITH\n");
-
-        // let cur_amount = bond_amount_handle
-        //     .get_delta_val(storage, current_epoch + offset, &params)?
-        //     .unwrap_or_default();
-        let cur_remain = bond_remain_handle
+        let cur_remain = bond_handle
             .get_delta_val(storage, current_epoch + offset, &params)?
             .unwrap_or_default();
-        // bond_amount_handle.set(
-        //     storage,
-        //     cur_amount + amount,
-        //     current_epoch,
-        //     offset,
-        // )?;
         // println!(
         //     "Bond remain at offset epoch {}: {}\n",
         //     current_epoch + offset,
         //     cur_remain
         // );
-        bond_remain_handle.set(
-            storage,
-            cur_remain + amount,
-            current_epoch,
-            offset,
-        )?;
+        bond_handle.set(storage, cur_remain + amount, current_epoch, offset)?;
     } else {
         println!("BOND DOESNT EXIST YET\n");
-
-        // bond_amount_handle.init(storage, amount, current_epoch, offset)?;
-        bond_remain_handle.init(storage, amount, current_epoch, offset)?;
+        bond_handle.init(storage, amount, current_epoch, offset)?;
     }
-
-    dbg!(&current_epoch);
-
-    // for ep in (current_epoch - 1_u64).iter_range(params.unbonding_len + 2) {
-    //     println!(
-    //         "bond delta at epoch {}: {}",
-    //         ep,
-    //         bond_remain_handle
-    //             .get_delta_val(storage, ep, &params)?
-    //             .unwrap_or_default()
-    //     )
-    // }
 
     println!("\nUPDATING VALIDATOR SET NOW\n");
 
@@ -2412,12 +2374,6 @@ where
     println!("UPDATING VALIDATOR DELTAS NOW\n");
 
     // Update the validator and total deltas
-    dbg!(read_validator_stake(
-        storage,
-        &params,
-        validator,
-        current_epoch + params.pipeline_len
-    )?);
     update_validator_deltas(
         storage,
         &params,
@@ -2425,33 +2381,6 @@ where
         amount,
         current_epoch,
     )?;
-    dbg!(read_validator_stake(
-        storage,
-        &params,
-        validator,
-        current_epoch + params.pipeline_len
-    )?);
-    // dbg!(validator_deltas_handle(validator).get_delta_val(
-    //     storage,
-    //     current_epoch,
-    //     &params
-    // )?);
-    // dbg!(validator_deltas_handle(validator).get_delta_val(
-    //     storage,
-    //     current_epoch + 1_u64,
-    //     &params
-    // )?);
-    // dbg!(validator_deltas_handle(validator).get_delta_val(
-    //     storage,
-    //     current_epoch + 2_u64,
-    //     &params
-    // )?);
-    // dbg!(read_validator_stake(
-    //     storage,
-    //     &params,
-    //     validator,
-    //     current_epoch + 2_u64
-    // )?);
 
     update_total_deltas(storage, &params, amount, current_epoch)?;
 
@@ -2498,7 +2427,7 @@ where
     let tokens_pre = read_validator_stake(storage, params, validator, epoch)?
         .unwrap_or_default();
 
-    println!("VALIDATOR STAKE BEFORE UPDATE: {}\n", tokens_pre);
+    // println!("VALIDATOR STAKE BEFORE UPDATE: {}\n", tokens_pre);
 
     let tokens_post = tokens_pre.change() + token_change;
     // TODO: handle overflow or negative vals perhaps with TryFrom
@@ -2540,9 +2469,9 @@ where
         // debug_assert!(val_address.is_some());
         assert!(val_address.is_some());
 
-        dbg!(active_vals_pre.is_empty(storage).unwrap());
+        // dbg!(active_vals_pre.is_empty(storage).unwrap());
         active_vals_pre.remove(storage, &position)?;
-        dbg!(active_vals_pre.is_empty(storage).unwrap());
+        // dbg!(active_vals_pre.is_empty(storage).unwrap());
 
         let max_inactive_validator_amount =
             get_max_inactive_validator_amount(&inactive_val_handle, storage)?;
@@ -2655,7 +2584,7 @@ where
     // needs to be copied (it may truly be empty after having one time contained
     // validators in the past)
 
-    let mut prev_epoch = target_epoch - 1;
+    let prev_epoch = target_epoch - 1;
     let (active, inactive) = (
         active_validator_set.at(&prev_epoch),
         inactive_validator_set.at(&prev_epoch),
@@ -2925,8 +2854,16 @@ where
         .get_data_handler()
         .iter(storage)?
         .collect();
-    println!("\nBonds before decrementing:");
-    dbg!(&bonds);
+    // println!("\nBonds before decrementing:");
+    // for ep in Epoch::default().iter_range(params.unbonding_len * 3) {
+    //     println!(
+    //         "bond delta at epoch {}: {}",
+    //         ep,
+    //         bond_remain_handle
+    //             .get_delta_val(storage, ep, &params)?
+    //             .unwrap_or_default()
+    //     )
+    // }
     let mut bond_iter = bonds.into_iter().rev();
 
     // Map: { bond start epoch, (new bond value, unbond value) }
@@ -2971,16 +2908,16 @@ where
         )?;
     }
 
-    println!("\nBonds after decrementing:");
-    for ep in Epoch::default().iter_range(params.unbonding_len + 5) {
-        println!(
-            "bond delta at epoch {}: {}",
-            ep,
-            bond_remain_handle
-                .get_delta_val(storage, ep, &params)?
-                .unwrap_or_default()
-        )
-    }
+    // println!("\nBonds after decrementing:");
+    // for ep in Epoch::default().iter_range(params.unbonding_len * 3) {
+    //     println!(
+    //         "bond delta at epoch {}: {}",
+    //         ep,
+    //         bond_remain_handle
+    //             .get_delta_val(storage, ep, &params)?
+    //             .unwrap_or_default()
+    //     )
+    // }
 
     println!("Updating validator set for unbonding");
     // Update the validator set at the pipeline offset
@@ -3103,6 +3040,7 @@ pub fn withdraw_tokens_new<S>(
 where
     S: StorageRead + StorageWrite,
 {
+    // println!("WITHDRAWING TOKENS IN EPOCH {current_epoch}\n");
     let params = read_pos_params(storage)?;
     let source = source.unwrap_or(validator);
 
@@ -3114,8 +3052,9 @@ where
     let mut slashed = token::Amount::default();
     let mut withdrawable_amount = token::Amount::default();
     let mut unbonds_to_remove: Vec<(Epoch, Epoch)> = Vec::new();
-    let mut unbond_iter = unbond_handle.iter(storage)?;
+    let unbond_iter = unbond_handle.iter(storage)?;
     for unbond in unbond_iter {
+        // println!("\nUNBOND ITER\n");
         let (
             NestedSubKey::Data {
                 key: end_epoch,
@@ -3123,6 +3062,8 @@ where
             },
             amount,
         ) = unbond?;
+
+        // dbg!(&end_epoch, &start_epoch, amount);
 
         // TODO: worry about updating this later after PR 740 perhaps
         // 1. cubic slashing
@@ -3152,6 +3093,7 @@ where
 
     // Remove the unbond data from storage
     for (end_epoch, start_epoch) in unbonds_to_remove {
+        // println!("Remove ({}, {}) from unbond\n", end_epoch, start_epoch);
         unbond_handle.at(&end_epoch).remove(storage, &start_epoch)?;
         // TODO: check if the `end_epoch` layer is now empty and remove it if
         // so, may need to implement remove/delete for nested map

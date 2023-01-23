@@ -38,7 +38,7 @@ use namada::ibc::Height as IbcHeight;
 use namada::ibc_proto::cosmos::base::v1beta1::Coin;
 use namada::ledger::governance::storage as gov_storage;
 use namada::ledger::masp;
-use namada::ledger::pos::{BondId, Bonds, CommissionRates, Unbonds};
+use namada::ledger::pos::CommissionRates;
 use namada::proto::Tx;
 use namada::types::address::{masp, masp_tx_key, Address};
 use namada::types::governance::{
@@ -2389,13 +2389,8 @@ pub async fn submit_unbond(ctx: Context, args: args::Unbond) {
 
     // Check the source's current bond amount
     let bond_source = source.clone().unwrap_or_else(|| validator.clone());
-    let bond_id = BondId {
-        source: bond_source.clone(),
-        validator: validator.clone(),
-    };
-    let bond_key = ledger::pos::bond_key(&bond_id);
+
     let client = HttpClient::new(args.tx.ledger_address.clone()).unwrap();
-    // let bonds = rpc::query_storage_value::<Bonds>(&client, &bond_key).await;
 
     let source = ctx.get(args.source.as_ref().unwrap_or(&args.validator));
     let validator = ctx.get(&args.validator);
@@ -2408,8 +2403,7 @@ pub async fn submit_unbond(ctx: Context, args: args::Unbond) {
     .await;
 
     let bond_amount =
-        rpc::query_bond_remaining(&client, &source, &validator, Some(epoch))
-            .await;
+        rpc::query_bond(&client, &source, &validator, Some(epoch)).await;
     println!("BOND AMOUNT REMAINING IS {}", bond_amount);
 
     if args.amount > bond_amount {
@@ -2468,11 +2462,7 @@ pub async fn submit_withdraw(ctx: Context, args: args::Withdraw) {
 
     // Check the source's current unbond amount
     let bond_source = source.clone().unwrap_or_else(|| validator.clone());
-    let bond_id = BondId {
-        source: bond_source.clone(),
-        validator: validator.clone(),
-    };
-    let bond_key = ledger::pos::unbond_key(&bond_id);
+
     let client = HttpClient::new(args.tx.ledger_address.clone()).unwrap();
     let tokens = rpc::query_withdrawable_tokens(
         &client,

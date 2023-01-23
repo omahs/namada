@@ -29,7 +29,7 @@ use namada::ledger::governance::parameters::GovParams;
 use namada::ledger::governance::storage as gov_storage;
 use namada::ledger::native_vp::governance::utils::Votes;
 use namada::ledger::parameters::{storage as param_storage, EpochDuration};
-use namada::ledger::pos::types::{decimal_mult_u64, WeightedValidator};
+use namada::ledger::pos::types::decimal_mult_u64;
 use namada::ledger::pos::{
     self, is_validator_slashes_key, BondId, Bonds, PosParams, Slash, Unbonds,
 };
@@ -1368,20 +1368,16 @@ pub async fn query_protocol_parameters(
     println!("{:4}Votes per token: {}", "", pos_params.tm_votes_per_token);
 }
 
-pub async fn query_bond_remaining(
+pub async fn query_bond(
     client: &HttpClient,
     source: &Address,
     validator: &Address,
     epoch: Option<Epoch>,
 ) -> token::Amount {
-    // let client = HttpClient::new(args.query.ledger_address).unwrap();
-    // let source = ctx.get(&args.owner.unwrap());
-    // let validator = ctx.get(&args.validator.unwrap());
-
     unwrap_client_response(
         RPC.vp()
             .pos()
-            .bond_remaining_new(client, source, validator, &epoch)
+            .bond_new(client, source, validator, &epoch)
             .await,
     )
 }

@@ -7,7 +7,7 @@ use std::fmt::Debug;
 use std::marker::PhantomData;
 
 use namada_core::types::address::Address;
-use namada_core::types::key::{common, PublicKeyTmRawHash};
+use namada_core::types::key::common;
 use namada_core::types::storage::Epoch;
 use namada_core::types::token;
 use rust_decimal::Decimal;

@@ -14,7 +14,7 @@ use namada_core::types::key::testing::{
     arb_common_keypair, common_sk_from_simple_seed,
 };
 use namada_core::types::storage::Epoch;
-use namada_core::types::{address, token};
+use namada_core::types::{address, key, token};
 use proptest::prelude::*;
 use proptest::test_runner::Config;
 use rust_decimal::Decimal;
@@ -24,13 +24,18 @@ use test_log::test;
 
 use crate::parameters::testing::arb_pos_params;
 use crate::parameters::PosParams;
-use crate::types::{GenesisValidator, ValidatorState};
+use crate::types::{
+    GenesisValidator, ValidatorState, WeightedValidator, WeightedValidatorNew,
+};
 use crate::{
-    active_validator_set_handle, become_validator_new, bond_tokens_new,
-    copy_validator_sets_and_positions, inactive_validator_set_handle,
+    active_validator_set_handle, become_validator_new, bond_handle,
+    bond_tokens_new, copy_validator_sets_and_positions,
+    find_validator_by_raw_hash, inactive_validator_set_handle,
     init_genesis_new, read_active_validator_set_addresses_with_stake,
-    staking_token_address, unbond_tokens_new, validator_state_handle,
-    withdraw_tokens_new,
+    read_total_stake, read_validator_delta_value, read_validator_stake,
+    staking_token_address, total_deltas_handle, unbond_handle,
+    unbond_tokens_new, validator_state_handle, withdraw_tokens_new,
+    write_validator_address_raw_hash,
 };
 
 proptest! {
@@ -156,7 +161,7 @@ fn test_bonds_aux(
     let mut s = TestWlStorage::default();
 
     // Genesis
-    let mut current_epoch = dbg!(s.storage.block.epoch);
+    let mut current_epoch = s.storage.block.epoch;
     init_genesis_new(
         &mut s,
         &params,
@@ -171,12 +176,56 @@ fn test_bonds_aux(
 
     let validator = validators.first().unwrap();
 
+    // Read some data before submitting bond
+    let pipeline_epoch = current_epoch + params.pipeline_len;
+    let total_stake_before =
+        read_total_stake(&s, &params, pipeline_epoch).unwrap();
+
     // Self-bond
     let amount = token::Amount::from(100_500_000);
     credit_tokens(&mut s, &staking_token_address(), &validator.address, amount)
         .unwrap();
     bond_tokens_new(&mut s, None, &validator.address, amount, current_epoch)
         .unwrap();
+
+    // Check the bond delta
+    let bond_handle = bond_handle(&validator.address, &validator.address);
+    let delta = bond_handle
+        .get_delta_val(&s, pipeline_epoch, &params)
+        .unwrap();
+    assert_eq!(delta, Some(amount.change()));
+
+    // Check the validator in the validator set
+    let set =
+        read_active_validator_set_addresses_with_stake(&s, pipeline_epoch)
+            .unwrap();
+    assert!(set.into_iter().any(
+        |WeightedValidatorNew {
+             bonded_stake,
+             address,
+         }| {
+            address == validator.address
+                && bonded_stake == validator.tokens + amount
+        }
+    ));
+
+    let val_deltas = read_validator_delta_value(
+        &s,
+        &params,
+        &validator.address,
+        pipeline_epoch,
+    )
+    .unwrap();
+    assert_eq!(val_deltas, Some(amount.change()));
+
+    let total_deltas_handle = total_deltas_handle();
+    assert_eq!(
+        current_epoch,
+        total_deltas_handle.get_last_update(&s).unwrap().unwrap()
+    );
+    let total_stake_after =
+        read_total_stake(&s, &params, pipeline_epoch).unwrap();
+    assert_eq!(total_stake_before + amount, total_stake_after);
 
     // Advance to epoch 2
     current_epoch = advance_epoch(&mut s, &params);
@@ -234,12 +283,7 @@ fn test_bonds_aux(
 
     for ep in Epoch::default().iter_range(params.unbonding_len * 3) {
         println!("Epoch {ep}");
-        let a = read_active_validator_set_addresses_with_stake(
-            &s,
-            &active_validator_set_handle(),
-            ep,
-        )
-        .unwrap();
+        let a = read_active_validator_set_addresses_with_stake(&s, ep).unwrap();
         dbg!(a);
     }
 
@@ -308,6 +352,25 @@ fn test_become_validator_aux(
     bond_tokens_new(&mut s, None, &new_validator, amount, current_epoch)
         .unwrap();
 
+    // Check the bond delta
+    let bond_handle = bond_handle(&new_validator, &new_validator);
+    let pipeline_epoch = current_epoch + params.pipeline_len;
+    let delta = bond_handle
+        .get_delta_val(&s, pipeline_epoch, &params)
+        .unwrap();
+    assert_eq!(delta, Some(amount.change()));
+
+    // Check the validator in the validator set
+    let set =
+        read_active_validator_set_addresses_with_stake(&s, pipeline_epoch)
+            .unwrap();
+    assert!(set.into_iter().any(
+        |WeightedValidatorNew {
+             bonded_stake,
+             address,
+         }| { address == new_validator && bonded_stake == amount }
+    ));
+
     // Advance to epoch 3
     current_epoch = advance_epoch(&mut s, &params);
 
@@ -324,6 +387,26 @@ fn test_become_validator_aux(
 
     // Withdraw the self-bond
     withdraw_tokens_new(&mut s, None, &new_validator, current_epoch).unwrap();
+}
+
+#[test]
+fn test_validator_raw_hash() {
+    let mut storage = TestWlStorage::default();
+    let address = address::testing::established_address_1();
+    let consensus_sk = key::testing::keypair_1();
+    let consensus_pk = consensus_sk.to_public();
+    let expected_raw_hash = key::tm_consensus_key_raw_hash(&consensus_pk);
+
+    assert!(
+        find_validator_by_raw_hash(&storage, &expected_raw_hash)
+            .unwrap()
+            .is_none()
+    );
+    write_validator_address_raw_hash(&mut storage, &address, &consensus_pk)
+        .unwrap();
+    let found =
+        find_validator_by_raw_hash(&storage, &expected_raw_hash).unwrap();
+    assert_eq!(found, Some(address));
 }
 
 /// Advance to the next epoch. Returns the new epoch.

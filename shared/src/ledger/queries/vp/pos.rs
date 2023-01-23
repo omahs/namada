@@ -5,14 +5,13 @@ use namada_core::ledger::storage_api::OptionExt;
 use namada_proof_of_stake::types::WeightedValidatorNew;
 use namada_proof_of_stake::{
     self, active_validator_set_handle, bond_handle,
-    inactive_validator_set_handle, read_pos_params, read_total_stake,
-    read_validator_stake, unbond_handle, PosReadOnly,
+    inactive_validator_set_handle, read_all_validator_addresses,
+    read_pos_params, read_total_stake, read_validator_stake, unbond_handle,
 };
 
-use crate::ledger::pos::{self, BondId};
 use crate::ledger::queries::types::RequestCtx;
 use crate::ledger::storage::{DBIter, StorageHasher, DB};
-use crate::ledger::storage_api;
+use crate::ledger::{pos, storage_api};
 use crate::types::address::Address;
 use crate::types::storage::Epoch;
 use crate::types::token;
@@ -46,9 +45,6 @@ router! {POS,
 
     ( "delegations" / [owner: Address] )
         -> HashSet<Address> = delegations,
-
-    // ( "bond_amount" / [owner: Address] / [validator: Address] / [epoch: opt Epoch] )
-    //     -> token::Amount = bond_amount,
 
     ( "bond" / [source: Address] / [validator: Address] / [epoch: opt Epoch] )
         -> token::Amount = bond_new,
@@ -93,9 +89,7 @@ where
     H: 'static + StorageHasher + Sync,
 {
     let epoch = epoch.unwrap_or(ctx.wl_storage.storage.last_epoch);
-
-    // TODO update
-    ctx.wl_storage.validator_addresses(epoch)
+    read_all_validator_addresses(ctx.wl_storage, epoch)
 }
 
 /// Get the total stake of a validator at the given epoch or current when

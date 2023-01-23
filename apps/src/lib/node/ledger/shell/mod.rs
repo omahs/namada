@@ -34,6 +34,7 @@ use namada::ledger::storage::{
 };
 use namada::ledger::storage_api::StorageRead;
 use namada::ledger::{ibc, pos, protocol};
+use namada::proof_of_stake;
 use namada::proto::{self, Tx};
 use namada::types::address;
 use namada::types::address::{masp, masp_tx_key, Address};
@@ -491,19 +492,23 @@ where
                         continue;
                     }
                 };
-                let validator = match self
-                    .wl_storage
-                    .read_validator_address_raw_hash(&validator_raw_hash)
-                {
-                    Some(validator) => validator,
-                    None => {
-                        tracing::error!(
-                            "Cannot find validator's address from raw hash {}",
-                            validator_raw_hash
-                        );
-                        continue;
-                    }
-                };
+                let validator =
+                    match proof_of_stake::find_validator_by_raw_hash(
+                        &self.wl_storage,
+                        &validator_raw_hash,
+                    )
+                    .expect("Must be able to read storage")
+                    {
+                        Some(validator) => validator,
+                        None => {
+                            tracing::error!(
+                                "Cannot find validator's address from raw \
+                                 hash {}",
+                                validator_raw_hash
+                            );
+                            continue;
+                        }
+                    };
                 tracing::info!(
                     "Slashing {} for {} in epoch {}, block height {}",
                     validator,

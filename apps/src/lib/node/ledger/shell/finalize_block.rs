@@ -4,8 +4,8 @@ use namada::ledger::pos::namada_proof_of_stake;
 use namada::ledger::pos::types::into_tm_voting_power;
 use namada::ledger::protocol;
 use namada::ledger::storage_api::StorageRead;
-use namada::proof_of_stake::validator_deltas_handle;
-use namada::types::storage::{BlockHash, BlockResults, Epoch, Header};
+// use namada::proof_of_stake::validator_deltas_handle;
+use namada::types::storage::{BlockHash, BlockResults, Header};
 use namada::types::token::Amount;
 
 use super::governance::execute_governance_proposals;
@@ -58,21 +58,14 @@ where
             let _proposals_result =
                 execute_governance_proposals(self, &mut response)?;
 
-            let val = dbg!(namada_proof_of_stake::read_active_validator_set_addresses_with_stake(&self.wl_storage, &namada_proof_of_stake::active_validator_set_handle(), current_epoch).unwrap());
-            dbg!(namada_proof_of_stake::read_active_validator_set_addresses_with_stake(&self.wl_storage, &namada_proof_of_stake::active_validator_set_handle(), current_epoch.next()).unwrap());
-
-            let val = val.into_iter().next().unwrap();
+            // let val = namada_proof_of_stake::read_active_validator_set_addresses_with_stake(&self.wl_storage, current_epoch).unwrap();
+            // let val = val.into_iter().next().unwrap();
 
             // Copy the new_epoch + pipeline_len - 1 validator set into
             // new_epoch + pipeline_len
             let pos_params =
                 namada_proof_of_stake::read_pos_params(&self.wl_storage)
                     .unwrap();
-            println!(
-                "CURRENT EPOCH {}, COPY VALIDATOR SET INTO EPOCH {}\n",
-                current_epoch,
-                current_epoch + pos_params.pipeline_len
-            );
             namada_proof_of_stake::copy_validator_sets_and_positions(
                 &mut self.wl_storage,
                 current_epoch,
@@ -81,49 +74,6 @@ where
                 &namada_proof_of_stake::inactive_validator_set_handle(),
             )
             .unwrap();
-
-            dbg!(namada_proof_of_stake::read_active_validator_set_addresses_with_stake(&self.wl_storage, &namada_proof_of_stake::active_validator_set_handle(), current_epoch.next().next()).unwrap());
-            println!("\nDEBUG VALIDATOR DELTAS");
-
-            dbg!(
-                namada_proof_of_stake::read_validator_stake(
-                    &self.wl_storage,
-                    &pos_params,
-                    &val.address,
-                    dbg!(current_epoch)
-                )
-                .unwrap()
-            );
-            dbg!(
-                namada_proof_of_stake::read_validator_stake(
-                    &self.wl_storage,
-                    &pos_params,
-                    &val.address,
-                    dbg!(current_epoch.next())
-                )
-                .unwrap()
-            );
-            dbg!(
-                namada_proof_of_stake::read_validator_stake(
-                    &self.wl_storage,
-                    &pos_params,
-                    &val.address,
-                    dbg!(current_epoch.next().next())
-                )
-                .unwrap()
-            );
-            for ep in 0_u64..=current_epoch.next().next().0 {
-                println!("\nEPOCH {}", ep);
-                dbg!(
-                    validator_deltas_handle(&val.address)
-                        .get_delta_val(&self.wl_storage, Epoch(ep), &pos_params)
-                        .unwrap()
-                );
-            }
-        } else {
-            dbg!(namada_proof_of_stake::read_active_validator_set_addresses_with_stake(&self.wl_storage, &namada_proof_of_stake::active_validator_set_handle(), current_epoch).unwrap());
-            dbg!(namada_proof_of_stake::read_active_validator_set_addresses_with_stake(&self.wl_storage, &namada_proof_of_stake::active_validator_set_handle(), current_epoch.next()).unwrap());
-            dbg!(namada_proof_of_stake::read_active_validator_set_addresses_with_stake(&self.wl_storage, &namada_proof_of_stake::active_validator_set_handle(), current_epoch.next().next()).unwrap());
         }
 
         let wrapper_fees = self.get_wrapper_tx_fees();

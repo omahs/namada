@@ -1,11 +1,10 @@
 //! Proof-of-Stake storage keys and storage integration via [`PosBase`] trait.
 
-use borsh::BorshDeserialize;
 use namada_core::ledger::storage::types::{decode, encode};
 use namada_core::ledger::storage::{self, StorageHasher, WlStorage};
 use namada_core::ledger::storage_api::collections::lazy_map;
 use namada_core::types::address::Address;
-use namada_core::types::storage::{DbKeySeg, Epoch, Key, KeySeg};
+use namada_core::types::storage::{DbKeySeg, Key, KeySeg};
 use namada_core::types::{key, token};
 use rust_decimal::Decimal;
 
@@ -26,8 +25,8 @@ const VALIDATOR_MAX_COMMISSION_CHANGE_STORAGE_KEY: &str =
     "max_commission_rate_change_NEW";
 const SLASHES_PREFIX: &str = "slash_NEW";
 const BOND_STORAGE_KEY: &str = "bond_NEW";
-const BOND_AMOUNT_STORAGE_KEY: &str = "bond_amount";
-const BOND_REMAINING_STORAGE_KEY: &str = "bond_remaining";
+// const BOND_AMOUNT_STORAGE_KEY: &str = "bond_amount";
+// const BOND_REMAINING_STORAGE_KEY: &str = "bond_remaining";
 const UNBOND_STORAGE_KEY: &str = "unbond_NEW";
 const VALIDATOR_SET_STORAGE_KEY: &str = "validator_set_NEW";
 const VALIDATOR_SETS_STORAGE_PREFIX: &str = "validator_sets_NEW";
@@ -272,11 +271,11 @@ pub fn bond_key(bond_id: &BondId) -> Key {
 
 /// Storage key for the total undeducted amount in the bond with a given ID
 /// (source and validator)
-pub fn bond_amount_key(bond_id: &BondId) -> Key {
-    bond_key(bond_id)
-        .push(&BOND_AMOUNT_STORAGE_KEY.to_owned())
-        .expect("Cannot obtain storage key")
-}
+// pub fn bond_amount_key(bond_id: &BondId) -> Key {
+//     bond_key(bond_id)
+//         .push(&BOND_AMOUNT_STORAGE_KEY.to_owned())
+//         .expect("Cannot obtain storage key")
+// }
 
 /// Storage key for the remaining amount in the bond with a given ID (source and
 /// validator)

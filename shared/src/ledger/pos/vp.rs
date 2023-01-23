@@ -16,28 +16,41 @@ use rust_decimal::Decimal;
 use thiserror::Error;
 
 use super::{
-    bond_key, is_bond_key, is_params_key, is_total_deltas_key, is_unbond_key,
-    is_validator_deltas_key, is_validator_set_key, params_key,
-    total_deltas_key, unbond_key, validator_commission_rate_key,
-    validator_consensus_key_key, validator_deltas_key,
-    validator_max_commission_rate_change_key, validator_set_key,
-    validator_slashes_key, validator_state_key, BondId, Bonds, CommissionRates,
-    TotalDeltas, Unbonds, ValidatorConsensusKeys, ValidatorDeltas,
+    bond_key,
+    is_params_key,
+    params_key,
+    total_deltas_key,
+    unbond_key,
+    validator_commission_rate_key,
+    validator_consensus_key_key,
+    validator_deltas_key,
+    validator_max_commission_rate_change_key,
+    validator_set_key,
+    validator_slashes_key,
+    validator_state_key,
+    BondId,
+    Bonds,
+    CommissionRates,
+    TotalDeltas,
+    Unbonds,
+    ValidatorConsensusKeys,
+    ValidatorDeltas,
     ValidatorSets,
+    // is_bond_key, is_total_deltas_key, is_unbond_key,is_validator_deltas_key,
+    // is_validator_set_key, is_validator_commission_rate_key,
+    // is_validator_consensus_key_key, is_validator_state_key
 };
 use crate::ledger::native_vp::{
     self, governance, Ctx, CtxPostStorageRead, CtxPreStorageRead, NativeVp,
 };
 use crate::ledger::pos::{
-    is_validator_address_raw_hash_key, is_validator_commission_rate_key,
-    is_validator_consensus_key_key,
-    is_validator_max_commission_rate_change_key, is_validator_state_key,
+    is_validator_address_raw_hash_key,
+    is_validator_max_commission_rate_change_key,
 };
 use crate::ledger::storage::{self as ledger_storage, StorageHasher};
 use crate::ledger::storage_api::StorageRead;
 use crate::types::address::{Address, InternalAddress};
 use crate::types::storage::{Key, KeySeg};
-use crate::types::token;
 use crate::vm::WasmCacheAccess;
 
 #[allow(missing_docs)]
@@ -120,7 +133,6 @@ where
         let addr = Address::Internal(Self::ADDR);
         let mut changes: Vec<DataUpdate> = vec![];
         let current_epoch = self.ctx.pre().get_block_epoch()?;
-        let staking_token_address = self.ctx.pre().get_native_token()?;
 
         println!("\nVALIDATING TX\n");
 

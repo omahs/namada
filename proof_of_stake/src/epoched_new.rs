@@ -16,7 +16,9 @@ use namada_core::types::storage::{self, Epoch};
 
 use crate::parameters::PosParams;
 
+/// Sub-key holding a lazy map in storage
 pub const LAZY_MAP_SUB_KEY: &str = "lazy_map";
+/// Sub-key for an epoched data structure's last (most recent) epoch of update
 pub const LAST_UPDATE_SUB_KEY: &str = "last_update";
 
 /// Discrete epoched data handle
@@ -554,10 +556,8 @@ where
         let last_update = self.get_last_update(storage)?;
         if let Some(last_update) = last_update {
             let expected_oldest_epoch = Self::sub_past_epochs(current_epoch);
-            if expected_oldest_epoch == last_update {
-                return Ok(());
-            } else {
-                dbg!(last_update, expected_oldest_epoch, current_epoch);
+            if expected_oldest_epoch != last_update {
+                // dbg!(last_update, expected_oldest_epoch, current_epoch);
                 let diff = expected_oldest_epoch
                     .0
                     .checked_sub(last_update.0)
@@ -713,7 +713,7 @@ impl EpochOffset for OffsetPipelinePlusUnbondingLen {
 )]
 pub struct OffsetReallyLarge;
 impl EpochOffset for OffsetReallyLarge {
-    fn value(params: &PosParams) -> u64 {
+    fn value(_params: &PosParams) -> u64 {
         10000_u64
     }
 

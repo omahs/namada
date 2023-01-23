@@ -186,7 +186,6 @@ mod tests {
             epoched_validator_set_pre.push(
                 read_active_validator_set_addresses_with_stake(
                     ctx(),
-                    &active_validator_set_handle(),
                     Epoch(epoch),
                 )?,
             );
@@ -236,7 +235,6 @@ mod tests {
             // epoched_validator_set_post.push(
             //     read_active_validator_set_addresses_with_stake(
             //         ctx(),
-            //         &active_validator_set_handle(),
             //         Epoch(epoch),
             //     )?,
             // );
@@ -281,7 +279,6 @@ mod tests {
                 epoched_validator_set_pre[epoch as usize],
                 read_active_validator_set_addresses_with_stake(
                     ctx(),
-                    &active_validator_set_handle(),
                     Epoch(epoch),
                 )?,
                 "Validator set before pipeline offset must not change - \
@@ -313,7 +310,6 @@ mod tests {
                 epoched_validator_set_pre[epoch as usize],
                 read_active_validator_set_addresses_with_stake(
                     ctx(),
-                    &active_validator_set_handle(),
                     Epoch(epoch),
                 )?,
                 "The validator set at and after pipeline offset should have \
