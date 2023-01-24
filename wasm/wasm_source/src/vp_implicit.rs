@@ -413,7 +413,7 @@ mod tests {
         tx_env.credit_tokens(&vp_owner, &token, None, amount);
 
         // Initialize VP environment from a transaction
-        vp_host_env::init_from_tx(vp_owner.clone(), tx_env, |address| {
+        vp_host_env::init_from_tx(vp_owner.clone(), tx_env, |_address| {
             // Bond the tokens, then unbond some of them
             tx::ctx()
                 .bond_tokens_new(Some(&vp_owner), &validator, bond_amount)
@@ -470,7 +470,7 @@ mod tests {
         let unbond_amount = token::Amount::from(3_098_123);
 
         // Spawn the accounts to be able to modify their storage
-        tx_env.spawn_accounts([&&target, &token]);
+        tx_env.spawn_accounts([&target, &token]);
 
         // Credit the tokens to the VP owner before running the transaction to
         // be able to transfer from it
@@ -479,7 +479,7 @@ mod tests {
         tx_env.write_public_key(&vp_owner, &public_key);
 
         // Initialize VP environment from a transaction
-        vp_host_env::init_from_tx(vp_owner.clone(), tx_env, |address| {
+        vp_host_env::init_from_tx(vp_owner.clone(), tx_env, |_address| {
             // Bond the tokens, then unbond some of them
             tx::ctx()
                 .bond_tokens_new(Some(&vp_owner), &validator, bond_amount)

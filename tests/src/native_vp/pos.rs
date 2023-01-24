@@ -131,7 +131,7 @@ pub fn init_pos(
         init_genesis_new(
             &mut tx_env.wl_storage,
             params,
-            genesis_validators.to_vec().into_iter(),
+            genesis_validators.iter().cloned(),
             start_epoch,
         )
         .unwrap();

@@ -1798,18 +1798,14 @@ where
     {
         total_bonded += tokens;
 
-        // dbg!(&address, &tokens);
-
-        let active_val_handle =
-            active_validator_set_handle().at(&current_epoch).at(&tokens);
-
         validator_state_handle(&address).init_at_genesis(
             storage,
             ValidatorState::Candidate,
             current_epoch,
         )?;
 
-        // Insert the validator into a validator set
+        // Insert the validator into a validator set and write its epoched
+        // validator data
         insert_validator_into_validator_set(
             storage,
             params,
@@ -2042,7 +2038,6 @@ where
 /// Read all addresses from active validator set.
 pub fn read_active_validator_set_addresses<S>(
     storage: &S,
-    validator_set_handle: &ActiveValidatorSetsNew,
     epoch: namada_core::types::storage::Epoch,
 ) -> storage_api::Result<HashSet<Address>>
 where
@@ -2058,7 +2053,6 @@ where
 /// Read all addresses from inactive validator set.
 pub fn read_inactive_validator_set_addresses<S>(
     storage: &S,
-    validator_set_handle: &InactiveValidatorSetsNew,
     epoch: namada_core::types::storage::Epoch,
 ) -> storage_api::Result<HashSet<Address>>
 where
@@ -2139,16 +2133,9 @@ pub fn read_all_validator_addresses<S>(
 where
     S: StorageRead,
 {
-    let mut addresses = read_active_validator_set_addresses(
-        storage,
-        &active_validator_set_handle(),
-        epoch,
-    )?;
-    let inactive_addresses = read_inactive_validator_set_addresses(
-        storage,
-        &inactive_validator_set_handle(),
-        epoch,
-    )?;
+    let mut addresses = read_active_validator_set_addresses(storage, epoch)?;
+    let inactive_addresses =
+        read_inactive_validator_set_addresses(storage, epoch)?;
     addresses.extend(inactive_addresses.into_iter());
     Ok(addresses)
 }
@@ -2314,14 +2301,14 @@ where
             &active_set.at(&stake),
             storage,
             &target_epoch,
-            &address,
+            address,
         )?;
         write_num_active_validators(storage, num_active_validators + 1)?;
     } else {
         // Check to see if the current genesis validator should replace one
         // already in the active set
         let min_active_amount =
-            get_min_active_validator_amount(&active_set, storage)?;
+            get_min_active_validator_amount(active_set, storage)?;
         if stake > min_active_amount {
             // Swap this genesis validator in and demote the last min active
             // validator
@@ -2346,7 +2333,7 @@ where
                 &active_set.at(&stake),
                 storage,
                 &target_epoch,
-                &address,
+                address,
             )?;
             // Update and set the validator states
         } else {
@@ -2355,7 +2342,7 @@ where
                 &inactive_set.at(&stake.into()),
                 storage,
                 &target_epoch,
-                &address,
+                address,
             )?;
         }
     }
@@ -2460,7 +2447,7 @@ where
                 &active_val_handle.at(&max_inactive_validator_amount),
                 storage,
                 &epoch,
-                &removed_max_inactive.clone().unwrap(),
+                &removed_max_inactive.unwrap(),
             )?;
             // Insert the current validator into the inactive set
             insert_validator_into_set(
@@ -3248,7 +3235,7 @@ where
     } else {
         tracing::error!("PoS system transfer error, the source has no balance");
     }
-    return Ok(());
+    Ok(())
 }
 
 /// NEW: Get the total bond amount for a given bond ID at a given epoch
@@ -3308,13 +3295,9 @@ pub fn validator_set_update_tendermint<S>(
 
     let cur_active_validators =
         active_validator_set_handle().at(&current_epoch);
-    let prev_active_validators = if previous_epoch.is_some() {
-        Some(active_validator_set_handle().at(&previous_epoch.clone().unwrap()))
-    } else {
-        None
-    };
-
-    println!("\nSTART");
+    let prev_active_validators = previous_epoch.map(|previous_epoch| {
+        Some(active_validator_set_handle().at(&previous_epoch))
+    });
 
     let active_validators = cur_active_validators
         .iter(storage)
@@ -3330,8 +3313,7 @@ pub fn validator_set_update_tendermint<S>(
 
             println!(
                 "ACTIVE VALIDATOR ADDRESS {}, CUR_STAKE {}\n",
-                address.clone(),
-                cur_stake
+                address, cur_stake
             );
 
             // Check if the validator was active in the previous epoch with the
@@ -3345,36 +3327,40 @@ pub fn validator_set_update_tendermint<S>(
             // TODO: perhaps write a specific function for
             // (In)ActiveValidatorSetsNew that checks if a validator is
             // contained
-            if previous_epoch.is_some() && prev_active_validators.is_some() {
-                let prev_epoch = previous_epoch.unwrap();
+            if prev_active_validators.is_some() {
+                if let Some(prev_epoch) = previous_epoch {
+                    let prev_validator_state = validator_state_handle(&address)
+                        .get(storage, prev_epoch, params)
+                        .unwrap();
+                    let prev_validator_stake =
+                        validator_deltas_handle(&address)
+                            .get_sum(storage, prev_epoch, params)
+                            .unwrap()
+                            .map(token::Amount::from_change);
+                    if prev_validator_state == Some(ValidatorState::Candidate)
+                        && prev_validator_stake.map(|tokens| {
+                            into_tm_voting_power(
+                                params.tm_votes_per_token,
+                                tokens,
+                            )
+                        }) == Some(into_tm_voting_power(
+                            params.tm_votes_per_token,
+                            cur_stake,
+                        ))
+                    {
+                        return None;
+                    }
 
-                let prev_validator_state = validator_state_handle(&address)
-                    .get(storage, prev_epoch, params)
-                    .unwrap();
-                let prev_validator_stake = validator_deltas_handle(&address)
-                    .get_sum(storage, prev_epoch, params)
-                    .unwrap()
-                    .map(token::Amount::from_change);
-                if prev_validator_state == Some(ValidatorState::Candidate)
-                    && prev_validator_stake.map(|tokens| {
-                        into_tm_voting_power(params.tm_votes_per_token, tokens)
-                    }) == Some(into_tm_voting_power(
-                        params.tm_votes_per_token,
-                        cur_stake,
-                    ))
-                {
-                    return None;
-                }
-
-                if cur_stake == token::Amount::default() {
-                    // TODO: check if it's new validator or previously non-0
-                    // stake
-                    println!(
-                        "skipping validator update, {} active but without a \
-                         stake",
-                        address
-                    );
-                    return None;
+                    if cur_stake == token::Amount::default() {
+                        // TODO: check if it's new validator or previously non-0
+                        // stake
+                        println!(
+                            "skipping validator update, {} active but without \
+                             a stake",
+                            address
+                        );
+                        return None;
+                    }
                 }
             }
             println!("\nMAKING AN ACTIVE VALIDATOR CHANGE");
@@ -3404,47 +3390,48 @@ pub fn validator_set_update_tendermint<S>(
 
             println!(
                 "INACTIVE VALIDATOR ADDRESS {}, STAKE {}\n",
-                address.clone(),
-                cur_stake
+                address, cur_stake
             );
 
-            let prev_inactive_vals = inactive_validator_set_handle()
-                .at(&previous_epoch.clone().unwrap());
-            if previous_epoch.is_some()
-                && !prev_inactive_vals.is_empty(storage).unwrap()
-            {
-                let prev_epoch = previous_epoch.unwrap();
-                // Check if the current validator was in the inactive set
+            let prev_inactive_vals =
+                inactive_validator_set_handle().at(&previous_epoch.unwrap());
+            if !prev_inactive_vals.is_empty(storage).unwrap() {
+                if let Some(prev_epoch) = previous_epoch {
+                    // Check if the current validator was in the inactive set
 
-                // Note: don't think we should care if a validator that was and
-                // still is inactive has changed stake, since we will still tell
-                // tendermint that it is 0 stake to make it inactive. I think we
-                // were doing too much previously.
-                let prev_state = validator_state_handle(&address)
-                    .get(storage, prev_epoch, params)
-                    .unwrap();
-                if prev_state == Some(ValidatorState::Inactive) {
-                    return None;
-                }
-
-                // TODO: this will be deprecated, but not sure if it is even
-                // needed rn
-                if cur_stake == token::Amount::default() {
-                    // TODO: check if it's new validator or previously non-0
-                    // stake after `Pending` state is
-                    // removed
-                    let state = validator_state_handle(&address)
+                    // Note: don't think we should care if a validator that was
+                    // and still is inactive has changed
+                    // stake, since we will still tell
+                    // tendermint that it is 0 stake to make it inactive. I
+                    // think we were doing too much
+                    // previously.
+                    let prev_state = validator_state_handle(&address)
                         .get(storage, prev_epoch, params)
                         .unwrap();
-                    if let Some(ValidatorState::Pending) = state {
-                        println!(
-                            "skipping validator update, it's new {}",
-                            address.clone()
-                        );
+                    if prev_state == Some(ValidatorState::Inactive) {
                         return None;
+                    }
+
+                    // TODO: this will be deprecated, but not sure if it is even
+                    // needed rn
+                    if cur_stake == token::Amount::default() {
+                        // TODO: check if it's new validator or previously non-0
+                        // stake after `Pending` state is
+                        // removed
+                        let state = validator_state_handle(&address)
+                            .get(storage, prev_epoch, params)
+                            .unwrap();
+                        if let Some(ValidatorState::Pending) = state {
+                            println!(
+                                "skipping validator update, it's new {}",
+                                address
+                            );
+                            return None;
+                        }
                     }
                 }
             }
+
             let consensus_key = validator_consensus_key_handle(&address)
                 .get(storage, current_epoch, params)
                 .unwrap()

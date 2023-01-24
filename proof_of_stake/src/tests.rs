@@ -4,9 +4,7 @@ use std::cmp::min;
 use std::ops::Range;
 
 use namada_core::ledger::storage::testing::TestWlStorage;
-use namada_core::ledger::storage_api::collections::lazy_map::{
-    self, NestedSubKey,
-};
+use namada_core::ledger::storage_api::collections::lazy_map;
 use namada_core::ledger::storage_api::token::credit_tokens;
 use namada_core::ledger::storage_api::StorageRead;
 use namada_core::types::address::testing::{
@@ -36,8 +34,7 @@ use crate::{
     active_validator_set_handle, become_validator_new, bond_handle,
     bond_tokens_new, copy_validator_sets_and_positions,
     find_validator_by_raw_hash, inactive_validator_set_handle,
-    init_genesis_new, insert_validator_into_set,
-    insert_validator_into_validator_set,
+    init_genesis_new, insert_validator_into_validator_set,
     read_active_validator_set_addresses_with_stake,
     read_inactive_validator_set_addresses_with_stake,
     read_num_active_validators, read_total_stake, read_validator_delta_value,
@@ -149,7 +146,7 @@ fn test_init_genesis_aux(
         }
 
         let state = validator_state_handle(&validator.address)
-            .get(&mut s, start_epoch, &params)
+            .get(&s, start_epoch, &params)
             .unwrap();
 
         assert_eq!(state, Some(ValidatorState::Candidate));
@@ -158,10 +155,7 @@ fn test_init_genesis_aux(
 
 /// Test bonding
 /// NOTE: copy validator sets each time we advance the epoch
-fn test_bonds_aux(
-    mut params: PosParams,
-    mut validators: Vec<GenesisValidator>,
-) {
+fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
     // This can be useful for debugging:
     // params.pipeline_len = 2;
     // params.unbonding_len = 4;
@@ -181,6 +175,7 @@ fn test_bonds_aux(
 
     // Advance to epoch 1
     current_epoch = advance_epoch(&mut s, &params);
+    let self_bond_epoch = current_epoch;
 
     let validator = validators.first().unwrap();
 
@@ -242,10 +237,6 @@ fn test_bonds_aux(
         read_total_stake(&s, &params, pipeline_epoch).unwrap();
     assert_eq!(total_stake_before + amount, total_stake_after);
 
-    // Advance to epoch 2
-    let self_bond_epoch = current_epoch.clone();
-    current_epoch = advance_epoch(&mut s, &params);
-
     // Get a non-validating account with tokens
     let delegator = address::testing::gen_implicit_address();
     let amount_del = token::Amount::from(201_000_000);
@@ -259,8 +250,9 @@ fn test_bonds_aux(
     assert_eq!(balance, amount_del);
 
     // Advance to epoch 3
+    advance_epoch(&mut s, &params);
     current_epoch = advance_epoch(&mut s, &params);
-    let delegation_epoch = current_epoch.clone();
+    let delegation_epoch = current_epoch;
 
     // Delegation
     bond_tokens_new(
@@ -309,7 +301,7 @@ fn test_bonds_aux(
     for _ in 0..2 {
         current_epoch = advance_epoch(&mut s, &params);
     }
-    let unbond_epoch = current_epoch.clone();
+    let unbond_epoch = current_epoch;
 
     // Unbond the self-bond
     unbond_tokens_new(
@@ -464,7 +456,7 @@ fn test_become_validator_aux(
     params: PosParams,
     new_validator: Address,
     new_validator_consensus_key: SecretKey,
-    mut validators: Vec<GenesisValidator>,
+    validators: Vec<GenesisValidator>,
 ) {
     println!(
         "Test inputs: {params:?}, new validator: {new_validator}, genesis \
@@ -637,7 +629,8 @@ fn test_validator_sets() {
         }]
         .into_iter(),
         epoch,
-    );
+    )
+    .unwrap();
 
     // Insert another validator with the same stake
     let (val2, stake2) = (gen_validator(), token::Amount::whole(1));

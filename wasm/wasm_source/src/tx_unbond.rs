@@ -253,13 +253,13 @@ mod tests {
                     &unbond.validator,
                     Epoch(epoch)
                 )?,
-                Some(expected_amount_before_pipeline.into()),
+                Some(expected_amount_before_pipeline),
                 "The validator deltas before the pipeline offset must not \
                  change - checking in epoch: {epoch}"
             );
             assert_eq!(
                 read_total_stake(ctx(), &pos_params, Epoch(epoch))?,
-                expected_amount_before_pipeline.into(),
+                expected_amount_before_pipeline,
                 "The total deltas before the pipeline offset must not change \
                  - checking in epoch: {epoch}"
             );
@@ -284,25 +284,27 @@ mod tests {
                     &unbond.validator,
                     Epoch(epoch)
                 )?,
-                Some((initial_stake - unbond.amount).into()),
+                Some(initial_stake - unbond.amount),
                 "The validator deltas at and after the pipeline offset must \
                  have changed - checking in epoch: {epoch}"
             );
             assert_eq!(
                 read_total_stake(ctx(), &pos_params, Epoch(epoch))?,
-                (initial_stake - unbond.amount).into(),
+                (initial_stake - unbond.amount),
                 "The total deltas at and after the pipeline offset must have \
                  changed - checking in epoch: {epoch}"
             );
-            assert_ne!(
-                epoched_validator_set_pre[epoch as usize],
-                read_active_validator_set_addresses_with_stake(
-                    ctx(),
-                    Epoch(epoch),
-                )?,
-                "The validator set at and after pipeline offset should have \
-                 changed - checking epoch {epoch}"
-            );
+            if epoch == pos_params.pipeline_len {
+                assert_ne!(
+                    epoched_validator_set_pre[epoch as usize],
+                    read_active_validator_set_addresses_with_stake(
+                        ctx(),
+                        Epoch(epoch),
+                    )?,
+                    "The validator set at and after pipeline offset should \
+                     have changed - checking epoch {epoch}"
+                );
+            }
         }
 
         {

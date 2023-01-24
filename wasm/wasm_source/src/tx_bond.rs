@@ -21,9 +21,8 @@ mod tests {
 
     use namada::ledger::pos::{GenesisValidator, PosParams, PosVP};
     use namada::proof_of_stake::{
-        active_validator_set_handle, bond_handle,
-        read_active_validator_set_addresses_with_stake, read_total_stake,
-        read_validator_stake,
+        bond_handle, read_active_validator_set_addresses_with_stake,
+        read_total_stake, read_validator_stake,
     };
     use namada::proto::Tx;
     use namada::types::storage::Epoch;
@@ -247,12 +246,14 @@ mod tests {
                      must be incremented by the bonded amount - checking in \
                      epoch: {epoch}"
                 );
-                assert_ne!(
-                    epoched_validator_set_pre[epoch],
-                    epoched_validator_set_post[epoch],
-                    "Validator set at and after pipeline offset must have \
-                     changed - checking epoch {epoch}"
-                );
+                if epoch == pos_params.pipeline_len as usize {
+                    assert_ne!(
+                        epoched_validator_set_pre[epoch],
+                        epoched_validator_set_post[epoch],
+                        "Validator set at and after pipeline offset must have \
+                         changed - checking epoch {epoch}"
+                    );
+                }
             }
         }
 

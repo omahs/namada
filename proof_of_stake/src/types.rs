@@ -55,7 +55,7 @@ impl ValidatorSetPositionsNew {
         let last_update = last_update.unwrap();
         let future_most_epoch: Epoch = last_update + params.pipeline_len;
         // dbg!(future_most_epoch);
-        let mut epoch = std::cmp::min(epoch.clone(), future_most_epoch);
+        let mut epoch = std::cmp::min(*epoch, future_most_epoch);
         loop {
             // dbg!(epoch);
             match self.at(&epoch).get(storage, address)? {
@@ -124,7 +124,7 @@ impl ActiveValidatorSetsNew {
         }
         let last_update = last_update.unwrap();
         let future_most_epoch: Epoch = last_update + params.pipeline_len;
-        let mut epoch = std::cmp::min(epoch.clone(), future_most_epoch);
+        let mut epoch = std::cmp::min(epoch, future_most_epoch);
         loop {
             match self.at(&epoch).at(amount).get(storage, position)? {
                 Some(address) => return Ok(Some(address)),
@@ -167,11 +167,11 @@ impl InactiveValidatorSetsNew {
         }
         let last_update = last_update.unwrap();
         let future_most_epoch: Epoch = last_update + params.pipeline_len;
-        let mut epoch = std::cmp::min(epoch.clone(), future_most_epoch);
+        let mut epoch = std::cmp::min(epoch, future_most_epoch);
         loop {
             match self
                 .at(&epoch)
-                .at(&amount.clone().into())
+                .at(&(*amount).into())
                 .get(storage, position)?
             {
                 Some(address) => return Ok(Some(address)),
