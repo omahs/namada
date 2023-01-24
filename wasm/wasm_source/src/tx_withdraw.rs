@@ -21,7 +21,8 @@ fn apply_tx(ctx: &mut Ctx, tx_data: Vec<u8>) -> TxResult {
 
 #[cfg(test)]
 mod tests {
-    use namada::ledger::pos::{BondId, GenesisValidator, PosParams, PosVP};
+    use namada::ledger::pos::{GenesisValidator, PosParams, PosVP};
+    use namada::proof_of_stake::unbond_handle;
     use namada::proto::Tx;
     use namada::types::storage::Epoch;
     use namada_tests::log::test;
@@ -114,7 +115,7 @@ mod tests {
         if is_delegation {
             // Initialize the delegation - unlike genesis validator's self-bond,
             // this happens at pipeline offset
-            ctx().bond_tokens(
+            ctx().bond_tokens_new(
                 withdraw.source.as_ref(),
                 &withdraw.validator,
                 initial_stake,
@@ -122,7 +123,7 @@ mod tests {
         }
 
         // Unbond the `unbonded_amount` at the starting epoch 0
-        ctx().unbond_tokens(
+        ctx().unbond_tokens_new(
             withdraw.source.as_ref(),
             &withdraw.validator,
             unbonded_amount,
@@ -130,17 +131,25 @@ mod tests {
 
         tx_host_env::commit_tx_and_block();
 
-        // Fast forward to unbonding offset epoch so that it's possible to
-        // withdraw the unbonded tokens
+        // Fast forward to pipeline + unbonding offset epoch so that it's
+        // possible to withdraw the unbonded tokens
         tx_host_env::with(|env| {
-            for _ in 0..pos_params.unbonding_len {
+            for _ in 0..(pos_params.pipeline_len + pos_params.unbonding_len) {
                 env.wl_storage.storage.block.epoch =
                     env.wl_storage.storage.block.epoch.next();
             }
         });
+        let bond_epoch = if is_delegation {
+            Epoch(pos_params.pipeline_len)
+        } else {
+            Epoch::default()
+        };
+        let withdraw_epoch =
+            Epoch(pos_params.pipeline_len + pos_params.unbonding_len);
+
         assert_eq!(
             tx_host_env::with(|env| env.wl_storage.storage.block.epoch),
-            Epoch(pos_params.unbonding_len)
+            Epoch(pos_params.pipeline_len + pos_params.unbonding_len)
         );
 
         let tx_code = vec![];
@@ -162,22 +171,21 @@ mod tests {
             .source
             .clone()
             .unwrap_or_else(|| withdraw.validator.clone());
-        let unbond_id = BondId {
-            validator: withdraw.validator,
-            source: unbond_src,
-        };
-        let unbonds_pre = ctx().read_unbond(&unbond_id)?.unwrap();
-        assert_eq!(
-            unbonds_pre.get(pos_params.unbonding_len).unwrap().sum(),
-            unbonded_amount
-        );
+
+        let handle = unbond_handle(&unbond_src, &withdraw.validator);
+
+        let unbond_pre =
+            handle.at(&withdraw_epoch).get(ctx(), &bond_epoch).unwrap();
+
+        assert_eq!(unbond_pre, Some(unbonded_amount));
 
         apply_tx(ctx(), tx_data)?;
 
         // Read the data after the tx is executed
-        let unbonds_post = ctx().read_unbond(&unbond_id)?;
+        let unbond_post =
+            handle.at(&withdraw_epoch).get(ctx(), &bond_epoch).unwrap();
         assert!(
-            unbonds_post.is_none(),
+            unbond_post.is_none(),
             "Because we're withdraw the full unbonded amount, there should be \
              no unbonds left"
         );
