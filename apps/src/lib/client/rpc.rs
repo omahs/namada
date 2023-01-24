@@ -1940,6 +1940,22 @@ pub async fn query_slashes(ctx: Context, args: args::QuerySlashes) {
     }
 }
 
+pub async fn query_delegations(ctx: Context, args: args::QueryDelegations) {
+    let client = HttpClient::new(args.query.ledger_address).unwrap();
+    let owner = ctx.get(&args.owner);
+    let delegations = unwrap_client_response(
+        RPC.vp().pos().delegations(&client, &owner).await,
+    );
+    if delegations.is_empty() {
+        println!("No delegations found");
+    } else {
+        println!("Found delegations to:");
+        for delegation in delegations {
+            println!("  {delegation}");
+        }
+    }
+}
+
 /// Dry run a transaction
 pub async fn dry_run_tx(ledger_address: &TendermintAddress, tx_bytes: Vec<u8>) {
     let client = HttpClient::new(ledger_address.clone()).unwrap();

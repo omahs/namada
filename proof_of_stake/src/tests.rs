@@ -4,12 +4,15 @@ use std::cmp::min;
 use std::ops::Range;
 
 use namada_core::ledger::storage::testing::TestWlStorage;
+use namada_core::ledger::storage_api::collections::lazy_map::{
+    self, NestedSubKey,
+};
 use namada_core::ledger::storage_api::token::credit_tokens;
 use namada_core::ledger::storage_api::StorageRead;
 use namada_core::types::address::testing::{
     address_from_simple_seed, arb_established_address,
 };
-use namada_core::types::address::Address;
+use namada_core::types::address::{Address, EstablishedAddressGen};
 use namada_core::types::key::common::SecretKey;
 use namada_core::types::key::testing::{
     arb_common_keypair, common_sk_from_simple_seed,
@@ -25,12 +28,17 @@ use test_log::test;
 
 use crate::parameters::testing::arb_pos_params;
 use crate::parameters::PosParams;
-use crate::types::{GenesisValidator, ValidatorState, WeightedValidatorNew};
+use crate::types::{
+    GenesisValidator, Position, ReverseOrdTokenAmount, ValidatorState,
+    WeightedValidatorNew,
+};
 use crate::{
     active_validator_set_handle, become_validator_new, bond_handle,
     bond_tokens_new, copy_validator_sets_and_positions,
     find_validator_by_raw_hash, inactive_validator_set_handle,
-    init_genesis_new, read_active_validator_set_addresses_with_stake,
+    init_genesis_new, insert_validator_into_set,
+    insert_validator_into_validator_set,
+    read_active_validator_set_addresses_with_stake,
     read_inactive_validator_set_addresses_with_stake,
     read_num_active_validators, read_total_stake, read_validator_delta_value,
     read_validator_stake, staking_token_address, total_deltas_handle,
@@ -598,6 +606,121 @@ fn test_validator_raw_hash() {
     let found =
         find_validator_by_raw_hash(&storage, &expected_raw_hash).unwrap();
     assert_eq!(found, Some(address));
+}
+
+#[test]
+fn test_validator_sets() {
+    let mut s = TestWlStorage::default();
+    // Only 2 active validator slots
+    let params = PosParams {
+        max_validator_slots: 2,
+        ..Default::default()
+    };
+    let seed = "seed";
+    let mut address_gen = EstablishedAddressGen::new(seed);
+    let mut gen_validator = || address_gen.generate_address(seed);
+
+    // Start with one genesis validator
+    let epoch = Epoch::default();
+    let pipeline_epoch = epoch + params.pipeline_len;
+    let pk1 = key::testing::keypair_1().to_public();
+    let (val1, stake1) = (gen_validator(), token::Amount::whole(1));
+    init_genesis_new(
+        &mut s,
+        &params,
+        [GenesisValidator {
+            address: val1.clone(),
+            tokens: stake1,
+            consensus_key: pk1,
+            commission_rate: Decimal::new(1, 1),
+            max_commission_rate_change: Decimal::new(1, 1),
+        }]
+        .into_iter(),
+        epoch,
+    );
+
+    // Insert another validator with the same stake
+    let (val2, stake2) = (gen_validator(), token::Amount::whole(1));
+    insert_validator_into_validator_set(
+        &mut s,
+        &params,
+        &val2,
+        stake2,
+        pipeline_epoch,
+    )
+    .unwrap();
+
+    let active_vals: Vec<_> = active_validator_set_handle()
+        .at(&pipeline_epoch)
+        .iter(&s)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(matches!(
+        &active_vals[0],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        },
+        address) if address == &val1 && stake == &stake1 && *position == Position::default()
+    ));
+    assert!(matches!(
+        &active_vals[1],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        },
+        address) if address == &val2 && stake == &stake2 && *position == Position::ONE
+    ));
+
+    // Insert another validator with a greater stake, it should replace 2nd
+    // active validator, which should become inactive
+    let (val3, stake3) = (gen_validator(), token::Amount::whole(10));
+    insert_validator_into_validator_set(
+        &mut s,
+        &params,
+        &val3,
+        stake3,
+        pipeline_epoch,
+    )
+    .unwrap();
+
+    let active_vals: Vec<_> = active_validator_set_handle()
+        .at(&pipeline_epoch)
+        .iter(&s)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(matches!(
+        &active_vals[0],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        },
+        address) if address == &val1 && stake == &stake1 && *position == Position::default()
+    ));
+    assert!(matches!(
+        &active_vals[1],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        },
+        address) if address == &val3 && stake == &stake3 && *position == Position::default()
+    ));
+    let inactive_vals: Vec<_> = inactive_validator_set_handle()
+        .at(&pipeline_epoch)
+        .iter(&s)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(matches!(
+        &inactive_vals[0],
+        (lazy_map::NestedSubKey::Data {
+                key: ReverseOrdTokenAmount(stake),
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        },
+        address) if address == &val2 && stake == &stake2 && *position == Position::default()
+    ));
 }
 
 /// Advance to the next epoch. Returns the new epoch.

@@ -370,6 +370,7 @@ mod tests {
                 .unwrap()
         );
     }
+
     /// Test that a PoS action that must be authorized is rejected without a
     /// valid signature.
     #[test]

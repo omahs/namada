@@ -1786,8 +1786,6 @@ where
     active_validator_set_handle().init(storage, current_epoch)?;
     // Initialize inactive set even if don't fill the active set
     inactive_validator_set_handle().init(storage, current_epoch)?;
-    let mut n_validators: u64 = 0;
-
     validator_set_positions_handle().init(storage, current_epoch)?;
 
     for GenesisValidator {
@@ -1811,13 +1809,12 @@ where
             current_epoch,
         )?;
 
-        // Insert the validator into the proper set
+        // Insert the validator into a validator set
         insert_validator_into_validator_set(
             storage,
             params,
             &address,
             tokens,
-            current_epoch,
             current_epoch,
         )?;
 
@@ -1849,15 +1846,7 @@ where
             commission_rate,
             current_epoch,
         )?;
-        n_validators += 1;
     }
-    // Write the number of active validators
-    let n_active_validators = if n_validators > params.max_validator_slots {
-        params.max_validator_slots
-    } else {
-        n_validators
-    };
-    write_num_active_validators(storage, n_active_validators)?;
     // Write total deltas to storage
     total_deltas_handle().init_at_genesis(
         storage,
@@ -2311,7 +2300,6 @@ fn insert_validator_into_validator_set<S>(
     params: &PosParams,
     address: &Address,
     stake: token::Amount,
-    current_epoch: Epoch,
     target_epoch: Epoch,
 ) -> storage_api::Result<()>
 where
@@ -2328,6 +2316,7 @@ where
             &target_epoch,
             &address,
         )?;
+        write_num_active_validators(storage, num_active_validators + 1)?;
     } else {
         // Check to see if the current genesis validator should replace one
         // already in the active set
@@ -3014,7 +3003,6 @@ where
         params,
         address,
         stake,
-        current_epoch,
         pipeline_epoch,
     )?;
     Ok(())

@@ -76,6 +76,9 @@ pub async fn main() -> Result<()> {
                 Sub::QuerySlashes(QuerySlashes(args)) => {
                     rpc::query_slashes(ctx, args).await;
                 }
+                Sub::QueryDelegations(QueryDelegations(args)) => {
+                    rpc::query_delegations(ctx, args).await;
+                }
                 Sub::QueryResult(QueryResult(args)) => {
                     rpc::query_result(ctx, args).await;
                 }

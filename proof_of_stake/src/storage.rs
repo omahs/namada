@@ -287,17 +287,23 @@ pub fn bond_key(bond_id: &BondId) -> Key {
 
 /// Is storage key for a bond?
 pub fn is_bond_key(key: &Key) -> Option<BondId> {
-    match &key.segments[..4] {
-        [
-            DbKeySeg::AddressSeg(addr),
-            DbKeySeg::StringSeg(prefix),
-            DbKeySeg::AddressSeg(source),
-            DbKeySeg::AddressSeg(validator),
-        ] if addr == &ADDRESS && prefix == BOND_STORAGE_KEY => Some(BondId {
-            source: source.clone(),
-            validator: validator.clone(),
-        }),
-        _ => None,
+    if key.segments.len() > 4 {
+        match &key.segments[..4] {
+            [
+                DbKeySeg::AddressSeg(addr),
+                DbKeySeg::StringSeg(prefix),
+                DbKeySeg::AddressSeg(source),
+                DbKeySeg::AddressSeg(validator),
+            ] if addr == &ADDRESS && prefix == BOND_STORAGE_KEY => {
+                Some(BondId {
+                    source: source.clone(),
+                    validator: validator.clone(),
+                })
+            }
+            _ => None,
+        }
+    } else {
+        None
     }
 }
 
