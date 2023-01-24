@@ -4,9 +4,9 @@ use std::ops::Range;
 
 use namada_core::ledger::storage::testing::TestWlStorage;
 use namada_core::ledger::storage_api::token::credit_tokens;
-use namada_core::ledger::storage_api::{StorageRead, StorageWrite};
+use namada_core::ledger::storage_api::StorageRead;
 use namada_core::types::address::testing::{
-    address_from_simple_seed, arb_address, arb_established_address,
+    address_from_simple_seed, arb_established_address,
 };
 use namada_core::types::address::Address;
 use namada_core::types::key::common::SecretKey;
@@ -24,9 +24,7 @@ use test_log::test;
 
 use crate::parameters::testing::arb_pos_params;
 use crate::parameters::PosParams;
-use crate::types::{
-    GenesisValidator, ValidatorState, WeightedValidator, WeightedValidatorNew,
-};
+use crate::types::{GenesisValidator, ValidatorState, WeightedValidatorNew};
 use crate::{
     active_validator_set_handle, become_validator_new, bond_handle,
     bond_tokens_new, copy_validator_sets_and_positions,
@@ -178,6 +176,13 @@ fn test_bonds_aux(
 
     // Read some data before submitting bond
     let pipeline_epoch = current_epoch + params.pipeline_len;
+    let pos_balance_pre = s
+        .read::<token::Amount>(&token::balance_key(
+            &staking_token_address(),
+            &super::ADDRESS,
+        ))
+        .unwrap()
+        .unwrap_or_default();
     let total_stake_before =
         read_total_stake(&s, &params, pipeline_epoch).unwrap();
 
@@ -189,8 +194,8 @@ fn test_bonds_aux(
         .unwrap();
 
     // Check the bond delta
-    let bond_handle = bond_handle(&validator.address, &validator.address);
-    let delta = bond_handle
+    let self_bond = bond_handle(&validator.address, &validator.address);
+    let delta = self_bond
         .get_delta_val(&s, pipeline_epoch, &params)
         .unwrap();
     assert_eq!(delta, Some(amount.change()));
@@ -228,41 +233,124 @@ fn test_bonds_aux(
     assert_eq!(total_stake_before + amount, total_stake_after);
 
     // Advance to epoch 2
+    let self_bond_epoch = current_epoch.clone();
     current_epoch = advance_epoch(&mut s, &params);
 
     // Get a non-validating account with tokens
     let delegator = address::testing::gen_implicit_address();
-    let amount = token::Amount::from(201_000_000);
-    credit_tokens(&mut s, &staking_token_address(), &delegator, amount)
+    let amount_del = token::Amount::from(201_000_000);
+    credit_tokens(&mut s, &staking_token_address(), &delegator, amount_del)
         .unwrap();
     let balance_key = token::balance_key(&staking_token_address(), &delegator);
     let balance = s
         .read::<token::Amount>(&balance_key)
         .unwrap()
         .unwrap_or_default();
-    dbg!(balance);
+    assert_eq!(balance, amount_del);
 
     // Advance to epoch 3
     current_epoch = advance_epoch(&mut s, &params);
+    let delegation_epoch = current_epoch.clone();
 
     // Delegation
     bond_tokens_new(
         &mut s,
         Some(&delegator),
         &validator.address,
-        amount,
+        amount_del,
         current_epoch,
     )
     .unwrap();
+    let val_stake_pre = read_validator_stake(
+        &s,
+        &params,
+        &validator.address,
+        current_epoch + params.pipeline_len - 1,
+    )
+    .unwrap()
+    .unwrap_or_default();
+    let val_stake_post = read_validator_stake(
+        &s,
+        &params,
+        &validator.address,
+        current_epoch + params.pipeline_len,
+    )
+    .unwrap()
+    .unwrap_or_default();
+    assert_eq!(validator.tokens + amount, val_stake_pre);
+    assert_eq!(validator.tokens + amount + amount_del, val_stake_post);
+    let delegation = bond_handle(&delegator, &validator.address);
+    assert_eq!(
+        delegation
+            .get_sum(&s, current_epoch + params.pipeline_len - 1, &params)
+            .unwrap()
+            .unwrap_or_default(),
+        token::Change::default()
+    );
+    assert_eq!(
+        delegation
+            .get_sum(&s, current_epoch + params.pipeline_len, &params)
+            .unwrap()
+            .unwrap_or_default(),
+        amount_del.change()
+    );
 
     // Advance to epoch 5
     for _ in 0..2 {
         current_epoch = advance_epoch(&mut s, &params);
     }
+    let unbond_epoch = current_epoch.clone();
 
     // Unbond the self-bond
-    unbond_tokens_new(&mut s, None, &validator.address, amount, current_epoch)
-        .unwrap();
+    unbond_tokens_new(
+        &mut s,
+        None,
+        &validator.address,
+        amount_del,
+        current_epoch,
+    )
+    .unwrap();
+
+    let val_stake_pre = read_validator_stake(
+        &s,
+        &params,
+        &validator.address,
+        current_epoch + params.pipeline_len - 1,
+    )
+    .unwrap();
+    let val_stake_post = read_validator_stake(
+        &s,
+        &params,
+        &validator.address,
+        current_epoch + params.pipeline_len,
+    )
+    .unwrap();
+    let val_delta = read_validator_delta_value(
+        &s,
+        &params,
+        &validator.address,
+        current_epoch + params.pipeline_len,
+    )
+    .unwrap();
+    let unbond = unbond_handle(&validator.address, &validator.address);
+
+    assert_eq!(val_delta, Some(-amount_del.change()));
+    assert_eq!(
+        unbond
+            .at(&(unbond_epoch + params.pipeline_len + params.unbonding_len))
+            .get(&s, &(self_bond_epoch + params.pipeline_len))
+            .unwrap(),
+        Some(amount)
+    );
+    assert_eq!(
+        unbond
+            .at(&(unbond_epoch + params.pipeline_len + params.unbonding_len))
+            .get(&s, &Epoch::default())
+            .unwrap(),
+        Some(amount_del - amount)
+    );
+    assert_eq!(val_stake_pre, Some(validator.tokens + amount + amount_del));
+    assert_eq!(val_stake_post, Some(validator.tokens + amount));
 
     // Unbond delegation
     unbond_tokens_new(
@@ -274,24 +362,73 @@ fn test_bonds_aux(
     )
     .unwrap();
 
+    let val_stake_pre = read_validator_stake(
+        &s,
+        &params,
+        &validator.address,
+        current_epoch + params.pipeline_len - 1,
+    )
+    .unwrap();
+    let val_stake_post = read_validator_stake(
+        &s,
+        &params,
+        &validator.address,
+        current_epoch + params.pipeline_len,
+    )
+    .unwrap();
+    let val_delta = read_validator_delta_value(
+        &s,
+        &params,
+        &validator.address,
+        current_epoch + params.pipeline_len,
+    )
+    .unwrap();
+    let unbond = unbond_handle(&delegator, &validator.address);
+
+    assert_eq!(val_delta, Some(-(amount + amount_del).change()));
+    assert_eq!(
+        unbond
+            .at(&(unbond_epoch + params.pipeline_len + params.unbonding_len))
+            .get(&s, &(delegation_epoch + params.pipeline_len))
+            .unwrap(),
+        Some(amount)
+    );
+    assert_eq!(val_stake_pre, Some(validator.tokens + amount + amount_del));
+    assert_eq!(val_stake_post, Some(validator.tokens));
+
     let withdrawable_offset = params.unbonding_len + params.pipeline_len;
 
     // Advance to withdrawable epoch
     for _ in 0..withdrawable_offset {
         current_epoch = advance_epoch(&mut s, &params);
     }
+    dbg!(current_epoch);
 
-    for ep in Epoch::default().iter_range(params.unbonding_len * 3) {
-        println!("Epoch {ep}");
-        let a = read_active_validator_set_addresses_with_stake(&s, ep).unwrap();
-        dbg!(a);
-    }
-
-    // Withdraw the self-bond
-    withdraw_tokens_new(&mut s, None, &validator.address, current_epoch)
+    let pos_balance = s
+        .read::<token::Amount>(&token::balance_key(
+            &staking_token_address(),
+            &super::ADDRESS,
+        ))
         .unwrap();
 
-    // Withdraw the delegation
+    assert_eq!(Some(pos_balance_pre + amount + amount_del), pos_balance);
+
+    // Withdraw the self-unbond
+    withdraw_tokens_new(&mut s, None, &validator.address, current_epoch)
+        .unwrap();
+    let unbond = unbond_handle(&validator.address, &validator.address);
+    let unbond_iter = unbond.iter(&s).unwrap().next();
+    assert!(unbond_iter.is_none());
+
+    let pos_balance = s
+        .read::<token::Amount>(&token::balance_key(
+            &staking_token_address(),
+            &super::ADDRESS,
+        ))
+        .unwrap();
+    assert_eq!(Some(pos_balance_pre + amount), pos_balance);
+
+    // Withdraw the delegation unbond
     withdraw_tokens_new(
         &mut s,
         Some(&delegator),
@@ -299,6 +436,17 @@ fn test_bonds_aux(
         current_epoch,
     )
     .unwrap();
+    let unbond = unbond_handle(&delegator, &validator.address);
+    let unbond_iter = unbond.iter(&s).unwrap().next();
+    assert!(unbond_iter.is_none());
+
+    let pos_balance = s
+        .read::<token::Amount>(&token::balance_key(
+            &staking_token_address(),
+            &super::ADDRESS,
+        ))
+        .unwrap();
+    assert_eq!(Some(pos_balance_pre), pos_balance);
 }
 
 /// Test validator initialization.
@@ -440,8 +588,8 @@ fn arb_genesis_validators(
                 let consensus_sk = common_sk_from_simple_seed(seed);
                 let consensus_key = consensus_sk.to_public();
 
-                let commission_rate = Decimal::new(005, 2);
-                let max_commission_rate_change = Decimal::new(0001, 3);
+                let commission_rate = Decimal::new(5, 2);
+                let max_commission_rate_change = Decimal::new(1, 3);
                 GenesisValidator {
                     address,
                     tokens,
