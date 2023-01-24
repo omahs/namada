@@ -3085,11 +3085,12 @@ where
                     u64::from(amount),
                 ));
                 slashed += to_slash;
-                withdrawable_amount += amount - to_slash;
-                unbonds_to_remove.push((end_epoch, start_epoch));
             }
         }
+        withdrawable_amount += amount;
+        unbonds_to_remove.push((end_epoch, start_epoch));
     }
+    withdrawable_amount -= slashed;
 
     // Remove the unbond data from storage
     for (end_epoch, start_epoch) in unbonds_to_remove {
