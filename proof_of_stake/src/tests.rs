@@ -1,5 +1,6 @@
 //! PoS system tests
 
+use std::cmp::min;
 use std::ops::Range;
 
 use namada_core::ledger::storage::testing::TestWlStorage;
@@ -30,10 +31,11 @@ use crate::{
     bond_tokens_new, copy_validator_sets_and_positions,
     find_validator_by_raw_hash, inactive_validator_set_handle,
     init_genesis_new, read_active_validator_set_addresses_with_stake,
-    read_total_stake, read_validator_delta_value, read_validator_stake,
-    staking_token_address, total_deltas_handle, unbond_handle,
-    unbond_tokens_new, validator_state_handle, withdraw_tokens_new,
-    write_validator_address_raw_hash,
+    read_inactive_validator_set_addresses_with_stake,
+    read_num_active_validators, read_total_stake, read_validator_delta_value,
+    read_validator_stake, staking_token_address, total_deltas_handle,
+    unbond_handle, unbond_tokens_new, validator_state_handle,
+    withdraw_tokens_new, write_validator_address_raw_hash,
 };
 
 proptest! {
@@ -477,6 +479,12 @@ fn test_become_validator_aux(
     // Advance to epoch 1
     current_epoch = advance_epoch(&mut s, &params);
 
+    let num_active_before = read_num_active_validators(&s).unwrap();
+    assert_eq!(
+        min(validators.len() as u64, params.max_validator_slots),
+        num_active_before
+    );
+
     // Initialize the validator account
     let consensus_key = new_validator_consensus_key.to_public();
     become_validator_new(
@@ -489,6 +497,16 @@ fn test_become_validator_aux(
         Decimal::new(5, 2),
     )
     .unwrap();
+
+    let num_active_after = read_num_active_validators(&s).unwrap();
+    assert_eq!(
+        if validators.len() as u64 >= params.max_validator_slots {
+            num_active_before
+        } else {
+            num_active_before + 1
+        },
+        num_active_after
+    );
 
     // Advance to epoch 2
     current_epoch = advance_epoch(&mut s, &params);
@@ -508,16 +526,41 @@ fn test_become_validator_aux(
         .unwrap();
     assert_eq!(delta, Some(amount.change()));
 
-    // Check the validator in the validator set
-    let set =
-        read_active_validator_set_addresses_with_stake(&s, pipeline_epoch)
-            .unwrap();
-    assert!(set.into_iter().any(
-        |WeightedValidatorNew {
-             bonded_stake,
-             address,
-         }| { address == new_validator && bonded_stake == amount }
-    ));
+    // Check the validator in the validator set -
+    // If the active validator slots are full and all the genesis validators
+    // have stake GTE the new validator's self-bond amount, the validator should
+    // be added to the inactive set, or the active otherwise
+    if params.max_validator_slots <= validators.len() as u64
+        && validators
+            .iter()
+            .all(|validator| validator.tokens >= amount)
+    {
+        let set = read_inactive_validator_set_addresses_with_stake(
+            &s,
+            pipeline_epoch,
+        )
+        .unwrap();
+        assert!(set.into_iter().any(
+            |WeightedValidatorNew {
+                 bonded_stake,
+                 address,
+             }| {
+                address == new_validator && bonded_stake == amount
+            }
+        ));
+    } else {
+        let set =
+            read_active_validator_set_addresses_with_stake(&s, pipeline_epoch)
+                .unwrap();
+        assert!(set.into_iter().any(
+            |WeightedValidatorNew {
+                 bonded_stake,
+                 address,
+             }| {
+                address == new_validator && bonded_stake == amount
+            }
+        ));
+    }
 
     // Advance to epoch 3
     current_epoch = advance_epoch(&mut s, &params);
