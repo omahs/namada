@@ -39,7 +39,7 @@ mod tests {
     use namada_tx_prelude::key::RefTo;
     use namada_tx_prelude::proof_of_stake::parameters::testing::arb_pos_params;
     use namada_tx_prelude::token;
-    use namada_vp_prelude::proof_of_stake::WeightedValidator;
+    use namada_vp_prelude::proof_of_stake::WeightedValidatorNew;
     use proptest::prelude::*;
     use rust_decimal;
 
@@ -119,14 +119,16 @@ mod tests {
         // Read some data before the tx is executed
         let mut epoched_total_stake_pre: Vec<token::Amount> = Vec::new();
         let mut epoched_validator_stake_pre: Vec<token::Amount> = Vec::new();
-        let mut epoched_validator_set_pre: Vec<HashSet<WeightedValidator>> =
+        let mut epoched_validator_set_pre: Vec<HashSet<WeightedValidatorNew>> =
             Vec::new();
 
         println!("\nFILLING PRE STATE\n");
         for epoch in 0..=pos_params.unbonding_len {
-            epoched_total_stake_pre.push(
-                read_total_stake(ctx(), &pos_params, Epoch(epoch))?.unwrap(),
-            );
+            epoched_total_stake_pre.push(read_total_stake(
+                ctx(),
+                &pos_params,
+                Epoch(epoch),
+            )?);
             epoched_validator_stake_pre.push(
                 read_validator_stake(
                     ctx(),
@@ -162,15 +164,17 @@ mod tests {
 
         let mut epoched_total_stake_post: Vec<token::Amount> = Vec::new();
         let mut epoched_validator_stake_post: Vec<token::Amount> = Vec::new();
-        let mut epoched_validator_set_post: Vec<HashSet<WeightedValidator>> =
+        let mut epoched_validator_set_post: Vec<HashSet<WeightedValidatorNew>> =
             Vec::new();
 
         println!("\nFILLING POST STATE\n");
 
         for epoch in 0..=pos_params.unbonding_len {
-            epoched_total_stake_post.push(
-                read_total_stake(ctx(), &pos_params, Epoch(epoch))?.unwrap(),
-            );
+            epoched_total_stake_post.push(read_total_stake(
+                ctx(),
+                &pos_params,
+                Epoch(epoch),
+            )?);
             epoched_validator_stake_post.push(
                 read_validator_stake(
                     ctx(),
@@ -264,7 +268,7 @@ mod tests {
             .clone()
             .unwrap_or_else(|| bond.validator.clone());
 
-        let bonds_post = bond_handle(&bond_src, &bond.validator, true);
+        let bonds_post = bond_handle(&bond_src, &bond.validator);
         // let bonds_post = ctx().read_bond(&bond_id)?.unwrap();
 
         for epoch in 0..pos_params.unbonding_len {

@@ -20,14 +20,13 @@ fn apply_tx(ctx: &mut Ctx, tx_data: Vec<u8>) -> TxResult {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
 
-    use namada::ledger::pos::{BondId, GenesisValidator, PosParams, PosVP};
-    use namada::proof_of_stake::types::{Bond, Unbond, WeightedValidator};
+    use namada::ledger::pos::{GenesisValidator, PosParams, PosVP};
+    use namada::proof_of_stake::types::WeightedValidatorNew;
     use namada::proof_of_stake::{
-        active_validator_set_handle, bond_handle,
-        read_active_validator_set_addresses_with_stake, read_total_stake,
-        read_validator_stake, unbond_handle,
+        bond_handle, read_active_validator_set_addresses_with_stake,
+        read_total_stake, read_validator_stake, unbond_handle,
     };
     use namada::proto::Tx;
     use namada::types::storage::Epoch;
@@ -72,11 +71,7 @@ mod tests {
         dbg!(&initial_stake, &unbond);
         let is_delegation = matches!(
             &unbond.source, Some(source) if *source != unbond.validator);
-        println!("\nIS DELEGATION = {}\n", is_delegation);
-        println!(
-            "\nPIPELINE LEN = {}\nUNBONDING LEN = {}\n",
-            pos_params.pipeline_len, pos_params.unbonding_len
-        );
+
         let consensus_key = key::testing::keypair_1().ref_to();
         let commission_rate = rust_decimal::Decimal::new(5, 2);
         let max_commission_rate_change = rust_decimal::Decimal::new(1, 2);
@@ -138,10 +133,10 @@ mod tests {
             .source
             .clone()
             .unwrap_or_else(|| unbond.validator.clone());
-        let unbond_id = BondId {
-            validator: unbond.validator.clone(),
-            source: unbond_src.clone(),
-        };
+        // let unbond_id = BondId {
+        //     validator: unbond.validator.clone(),
+        //     source: unbond_src.clone(),
+        // };
 
         let pos_balance_key = token::balance_key(
             &native_token,
@@ -152,23 +147,20 @@ mod tests {
             .expect("PoS must have balance");
         assert_eq!(pos_balance_pre, initial_stake);
 
-        println!(
-            "\nDEBUGG CURRENT EPOCH = {}\n",
-            ctx().get_block_epoch().unwrap()
-        );
-
-        let bond_handle = bond_handle(&unbond_src, &unbond.validator, true);
+        let bond_handle = bond_handle(&unbond_src, &unbond.validator);
 
         let mut epoched_total_stake_pre: Vec<token::Amount> = Vec::new();
         let mut epoched_validator_stake_pre: Vec<token::Amount> = Vec::new();
         let mut epoched_bonds_pre: Vec<Option<token::Amount>> = Vec::new();
-        let mut epoched_validator_set_pre: Vec<HashSet<WeightedValidator>> =
+        let mut epoched_validator_set_pre: Vec<HashSet<WeightedValidatorNew>> =
             Vec::new();
 
         for epoch in 0..=pos_params.unbonding_len {
-            epoched_total_stake_pre.push(
-                read_total_stake(ctx(), &pos_params, Epoch(epoch))?.unwrap(),
-            );
+            epoched_total_stake_pre.push(read_total_stake(
+                ctx(),
+                &pos_params,
+                Epoch(epoch),
+            )?);
             epoched_validator_stake_pre.push(
                 read_validator_stake(
                     ctx(),
@@ -208,11 +200,7 @@ mod tests {
         //     - `#{PoS}/validator/#{validator}/deltas`
         //     - `#{PoS}/total_deltas`
         //     - `#{PoS}/validator_set`
-        let mut epoched_total_stake_post: Vec<token::Amount> = Vec::new();
-        let mut epoched_validator_stake_post: Vec<token::Amount> = Vec::new();
         let mut epoched_bonds_post: Vec<Option<token::Amount>> = Vec::new();
-        let mut epoched_validator_set_post: Vec<HashSet<WeightedValidator>> =
-            Vec::new();
 
         for epoch in 0..=pos_params.unbonding_len {
             // epoched_total_stake_post.push(
@@ -271,7 +259,7 @@ mod tests {
             );
             assert_eq!(
                 read_total_stake(ctx(), &pos_params, Epoch(epoch))?,
-                Some(expected_amount_before_pipeline.into()),
+                expected_amount_before_pipeline.into(),
                 "The total deltas before the pipeline offset must not change \
                  - checking in epoch: {epoch}"
             );
@@ -302,7 +290,7 @@ mod tests {
             );
             assert_eq!(
                 read_total_stake(ctx(), &pos_params, Epoch(epoch))?,
-                Some((initial_stake - unbond.amount).into()),
+                (initial_stake - unbond.amount).into(),
                 "The total deltas at and after the pipeline offset must have \
                  changed - checking in epoch: {epoch}"
             );
@@ -335,16 +323,13 @@ mod tests {
                  {epoch}"
             );
             assert_eq!(
-                read_total_stake(ctx(), &pos_params, Epoch(epoch))?
-                    .map(|v| v.change()),
-                Some(expected_stake),
+                read_total_stake(ctx(), &pos_params, Epoch(epoch))?.change(),
+                expected_stake,
                 "The total deltas at after the unbonding offset epoch must be \
                  decremented by the unbonded amount - checking in epoch: \
                  {epoch}"
             );
         }
-
-        println!("SLURMY\n");
 
         //     - `#{staking_token}/balance/#{PoS}`
         // Check that PoS account balance is unchanged by unbond
@@ -390,7 +375,6 @@ mod tests {
 
         // Ensure that the unbond is structured as expected, withdrawable at
         // pipeline + unbonding offsets
-        println!("READING THE UNBOND IN WASM TEST\n");
         let actual_unbond_amount = unbond_handle
             .at(&Epoch::from(
                 pos_params.pipeline_len + pos_params.unbonding_len,
