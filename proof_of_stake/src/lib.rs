@@ -43,6 +43,7 @@ use namada_core::types::address::{self, Address, InternalAddress};
 use namada_core::types::key::{common, tm_consensus_key_raw_hash};
 pub use namada_core::types::storage::Epoch;
 use namada_core::types::token;
+use once_cell::unsync::Lazy;
 use parameters::PosParams;
 use rust_decimal::Decimal;
 use storage::{
@@ -3296,7 +3297,7 @@ pub fn validator_set_update_tendermint<S>(
     let cur_active_validators =
         active_validator_set_handle().at(&current_epoch);
     let prev_active_validators = previous_epoch.map(|previous_epoch| {
-        Some(active_validator_set_handle().at(&previous_epoch))
+        active_validator_set_handle().at(&previous_epoch)
     });
 
     let active_validators = cur_active_validators
@@ -3332,26 +3333,32 @@ pub fn validator_set_update_tendermint<S>(
                     let prev_validator_state = validator_state_handle(&address)
                         .get(storage, prev_epoch, params)
                         .unwrap();
-                    let prev_validator_stake =
-                        validator_deltas_handle(&address)
-                            .get_sum(storage, prev_epoch, params)
-                            .unwrap()
-                            .map(token::Amount::from_change);
-                    if prev_validator_state == Some(ValidatorState::Candidate)
-                        && prev_validator_stake.map(|tokens| {
+                    let prev_tm_voting_power = Lazy::new(|| {
+                        let prev_validator_stake =
+                            validator_deltas_handle(&address)
+                                .get_sum(storage, prev_epoch, params)
+                                .unwrap()
+                                .map(token::Amount::from_change);
+                        prev_validator_stake.map(|tokens| {
                             into_tm_voting_power(
                                 params.tm_votes_per_token,
                                 tokens,
                             )
-                        }) == Some(into_tm_voting_power(
+                        })
+                    });
+                    let cur_tm_voting_power = Lazy::new(|| {
+                        into_tm_voting_power(
                             params.tm_votes_per_token,
                             cur_stake,
-                        ))
+                        )
+                    });
+                    if prev_validator_state == Some(ValidatorState::Candidate)
+                        && *prev_tm_voting_power == Some(*cur_tm_voting_power)
                     {
                         return None;
                     }
 
-                    if cur_stake == token::Amount::default() {
+                    if *cur_tm_voting_power == 0 {
                         // TODO: check if it's new validator or previously non-0
                         // stake
                         println!(
@@ -3411,21 +3418,27 @@ pub fn validator_set_update_tendermint<S>(
                     if prev_state == Some(ValidatorState::Inactive) {
                         return None;
                     }
+                    // I think that's right, but we have to check that it wasn't
+                    // previously in the active set (the state is not relevant
+                    // to this). It would help to have that
+                    // in the storage as epoched
+                    // e.g. validator_sub_set (I think you suggested we add
+                    // this)
 
                     // TODO: this will be deprecated, but not sure if it is even
                     // needed rn
-                    if cur_stake == token::Amount::default() {
+                    let cur_tm_voting_power = into_tm_voting_power(
+                        params.tm_votes_per_token,
+                        cur_stake,
+                    );
+                    if cur_tm_voting_power == 0 {
                         // TODO: check if it's new validator or previously non-0
                         // stake after `Pending` state is
                         // removed
                         let state = validator_state_handle(&address)
                             .get(storage, prev_epoch, params)
                             .unwrap();
-                        if let Some(ValidatorState::Pending) = state {
-                            println!(
-                                "skipping validator update, it's new {}",
-                                address
-                            );
+                        if prev_state == Some(ValidatorState::Inactive) {
                             return None;
                         }
                     }

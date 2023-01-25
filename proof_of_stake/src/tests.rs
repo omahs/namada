@@ -39,7 +39,8 @@ use crate::{
     read_inactive_validator_set_addresses_with_stake,
     read_num_active_validators, read_total_stake, read_validator_delta_value,
     read_validator_stake, staking_token_address, total_deltas_handle,
-    unbond_handle, unbond_tokens_new, validator_state_handle,
+    unbond_handle, unbond_tokens_new, update_validator_deltas,
+    update_validator_set_new, validator_deltas_handle, validator_state_handle,
     withdraw_tokens_new, write_validator_address_raw_hash,
 };
 
@@ -603,72 +604,58 @@ fn test_validator_raw_hash() {
 #[test]
 fn test_validator_sets() {
     let mut s = TestWlStorage::default();
-    // Only 2 active validator slots
+    // Only 3 active validator slots
     let params = PosParams {
-        max_validator_slots: 2,
+        max_validator_slots: 3,
         ..Default::default()
     };
     let seed = "seed";
     let mut address_gen = EstablishedAddressGen::new(seed);
     let mut gen_validator = || address_gen.generate_address(seed);
 
-    // Start with one genesis validator
+    // Start with two genesis validators with 1 NAM stake
     let epoch = Epoch::default();
     let pipeline_epoch = epoch + params.pipeline_len;
     let pk1 = key::testing::keypair_1().to_public();
+    let pk2 = key::testing::keypair_2().to_public();
     let (val1, stake1) = (gen_validator(), token::Amount::whole(1));
+    let (val2, stake2) = (gen_validator(), token::Amount::whole(1));
+    let (val3, stake3) = (gen_validator(), token::Amount::whole(10));
+    let (val4, stake4) = (gen_validator(), token::Amount::whole(100));
+    let (val5, stake5) = (gen_validator(), token::Amount::whole(1));
+    let (val6, stake6) = (gen_validator(), token::Amount::whole(1));
+    println!("val1: {val1}, {stake1}");
+    println!("val2: {val2}, {stake2}");
+    println!("val3: {val3}, {stake3}");
+    println!("val4: {val4}, {stake4}");
+    println!("val5: {val5}, {stake5}");
+    println!("val6: {val6}, {stake6}");
+
     init_genesis_new(
         &mut s,
         &params,
-        [GenesisValidator {
-            address: val1.clone(),
-            tokens: stake1,
-            consensus_key: pk1,
-            commission_rate: Decimal::new(1, 1),
-            max_commission_rate_change: Decimal::new(1, 1),
-        }]
+        [
+            GenesisValidator {
+                address: val1.clone(),
+                tokens: stake1,
+                consensus_key: pk1,
+                commission_rate: Decimal::new(1, 1),
+                max_commission_rate_change: Decimal::new(1, 1),
+            },
+            GenesisValidator {
+                address: val2.clone(),
+                tokens: stake2,
+                consensus_key: pk2,
+                commission_rate: Decimal::new(1, 1),
+                max_commission_rate_change: Decimal::new(1, 1),
+            },
+        ]
         .into_iter(),
         epoch,
     )
     .unwrap();
 
-    // Insert another validator with the same stake
-    let (val2, stake2) = (gen_validator(), token::Amount::whole(1));
-    insert_validator_into_validator_set(
-        &mut s,
-        &params,
-        &val2,
-        stake2,
-        pipeline_epoch,
-    )
-    .unwrap();
-
-    let active_vals: Vec<_> = active_validator_set_handle()
-        .at(&pipeline_epoch)
-        .iter(&s)
-        .unwrap()
-        .map(Result::unwrap)
-        .collect();
-    assert!(matches!(
-        &active_vals[0],
-        (lazy_map::NestedSubKey::Data {
-                key: stake,
-                nested_sub_key: lazy_map::SubKey::Data(position),
-        },
-        address) if address == &val1 && stake == &stake1 && *position == Position::default()
-    ));
-    assert!(matches!(
-        &active_vals[1],
-        (lazy_map::NestedSubKey::Data {
-                key: stake,
-                nested_sub_key: lazy_map::SubKey::Data(position),
-        },
-        address) if address == &val2 && stake == &stake2 && *position == Position::ONE
-    ));
-
-    // Insert another validator with a greater stake, it should replace 2nd
-    // active validator, which should become inactive
-    let (val3, stake3) = (gen_validator(), token::Amount::whole(10));
+    // Insert another validator with the greater stake 10 NAM
     insert_validator_into_validator_set(
         &mut s,
         &params,
@@ -677,6 +664,9 @@ fn test_validator_sets() {
         pipeline_epoch,
     )
     .unwrap();
+    // Update deltas as they are needed for validator set updates
+    update_validator_deltas(&mut s, &params, &val3, stake3.change(), epoch)
+        .unwrap();
 
     let active_vals: Vec<_> = active_validator_set_handle()
         .at(&pipeline_epoch)
@@ -684,35 +674,366 @@ fn test_validator_sets() {
         .unwrap()
         .map(Result::unwrap)
         .collect();
+
+    assert_eq!(active_vals.len(), 3);
     assert!(matches!(
         &active_vals[0],
         (lazy_map::NestedSubKey::Data {
                 key: stake,
                 nested_sub_key: lazy_map::SubKey::Data(position),
-        },
-        address) if address == &val1 && stake == &stake1 && *position == Position::default()
+        }, address)
+        if address == &val1 && stake == &stake1 && *position == Position(0)
     ));
     assert!(matches!(
         &active_vals[1],
         (lazy_map::NestedSubKey::Data {
                 key: stake,
                 nested_sub_key: lazy_map::SubKey::Data(position),
-        },
-        address) if address == &val3 && stake == &stake3 && *position == Position::default()
+        }, address)
+        if address == &val2 && stake == &stake2 && *position == Position(1)
     ));
+    assert!(matches!(
+        &active_vals[2],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val3 && stake == &stake3 && *position == Position(0)
+    ));
+
+    // Insert another validator with a greater stake still 1000 NAM. It should
+    // replace 2nd active validator with stake 1, which should become inactive
+    insert_validator_into_validator_set(
+        &mut s,
+        &params,
+        &val4,
+        stake4,
+        pipeline_epoch,
+    )
+    .unwrap();
+    update_validator_deltas(&mut s, &params, &val4, stake4.change(), epoch)
+        .unwrap();
+
+    let active_vals: Vec<_> = active_validator_set_handle()
+        .at(&pipeline_epoch)
+        .iter(&s)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+
+    assert_eq!(active_vals.len(), 3);
+    assert!(matches!(
+        &active_vals[0],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val1 && stake == &stake1 && *position == Position(0)
+    ));
+    assert!(matches!(
+        &active_vals[1],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val3 && stake == &stake3 && *position == Position(0)
+    ));
+    assert!(matches!(
+        &active_vals[2],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val4 && stake == &stake4 && *position == Position(0)
+    ));
+
     let inactive_vals: Vec<_> = inactive_validator_set_handle()
         .at(&pipeline_epoch)
         .iter(&s)
         .unwrap()
         .map(Result::unwrap)
         .collect();
+
+    assert_eq!(inactive_vals.len(), 1);
     assert!(matches!(
         &inactive_vals[0],
         (lazy_map::NestedSubKey::Data {
                 key: ReverseOrdTokenAmount(stake),
                 nested_sub_key: lazy_map::SubKey::Data(position),
-        },
-        address) if address == &val2 && stake == &stake2 && *position == Position::default()
+        }, address)
+        if address == &val2 && stake == &stake2 && *position == Position(0)
+    ));
+
+    // Insert another validator with a stake 1 NAM. It should be added to the
+    // inactive set
+    insert_validator_into_validator_set(
+        &mut s,
+        &params,
+        &val5,
+        stake5,
+        pipeline_epoch,
+    )
+    .unwrap();
+    update_validator_deltas(&mut s, &params, &val5, stake5.change(), epoch)
+        .unwrap();
+
+    let inactive_vals: Vec<_> = inactive_validator_set_handle()
+        .at(&pipeline_epoch)
+        .iter(&s)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+
+    assert_eq!(inactive_vals.len(), 2);
+    assert!(matches!(
+        &inactive_vals[0],
+        (lazy_map::NestedSubKey::Data {
+                key: ReverseOrdTokenAmount(stake),
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val2 && stake == &stake2 && *position == Position(0)
+    ));
+    assert!(matches!(
+        &inactive_vals[1],
+        (lazy_map::NestedSubKey::Data {
+                key: ReverseOrdTokenAmount(stake),
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val5 && stake == &stake5 && *position == Position(1)
+    ));
+
+    /// Unbond some stake from val1, it should be be swapped with the greatest
+    /// inactive validator val2 into the inactive set
+    let unbond = token::Amount::from(500_000);
+    let stake1 = stake1 - unbond;
+    println!("val1 {val1} new stake {stake1}");
+    // Because `update_validator_set` and `update_validator_deltas` are
+    // effective from pipeline offset, we use pipeline epoch for the rest of the
+    // checks
+    update_validator_set_new(&mut s, &params, &val1, -unbond.change(), epoch)
+        .unwrap();
+    update_validator_deltas(&mut s, &params, &val1, -unbond.change(), epoch)
+        .unwrap();
+
+    let active_vals: Vec<_> = active_validator_set_handle()
+        .at(&pipeline_epoch)
+        .iter(&s)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+
+    assert_eq!(active_vals.len(), 3);
+    assert!(matches!(
+        &active_vals[0],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val2 && stake == &stake2 && *position == Position(0)
+    ));
+    assert!(matches!(
+        &active_vals[1],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val3 && stake == &stake3 && *position == Position(0)
+    ));
+    assert!(matches!(
+        &active_vals[2],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val4 && stake == &stake4 && *position == Position(0)
+    ));
+
+    let inactive_vals: Vec<_> = inactive_validator_set_handle()
+        .at(&pipeline_epoch)
+        .iter(&s)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+
+    assert_eq!(inactive_vals.len(), 2);
+    assert!(matches!(
+        &inactive_vals[0],
+        (lazy_map::NestedSubKey::Data {
+                key: ReverseOrdTokenAmount(stake),
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val5 && stake == &stake5 && *position == Position(1)
+    ));
+    assert!(matches!(
+        &inactive_vals[1],
+        (
+            lazy_map::NestedSubKey::Data {
+                key: ReverseOrdTokenAmount(stake),
+                nested_sub_key: lazy_map::SubKey::Data(position),
+            },
+            address
+        )
+        if address == &val1 && stake == &stake1 && *position == Position(0)
+    ));
+
+    // Insert another validator with stake 1 - it should be added after val1
+    insert_validator_into_validator_set(
+        &mut s,
+        &params,
+        &val6,
+        stake6,
+        pipeline_epoch,
+    )
+    .unwrap();
+    update_validator_deltas(&mut s, &params, &val6, stake6.change(), epoch)
+        .unwrap();
+
+    let active_vals: Vec<_> = active_validator_set_handle()
+        .at(&pipeline_epoch)
+        .iter(&s)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+
+    assert_eq!(active_vals.len(), 3);
+    assert!(matches!(
+        &active_vals[0],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val2 && stake == &stake2 && *position == Position(0)
+    ));
+    assert!(matches!(
+        &active_vals[1],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val3 && stake == &stake3 && *position == Position(0)
+    ));
+    assert!(matches!(
+        &active_vals[2],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val4 && stake == &stake4 && *position == Position(0)
+    ));
+
+    let inactive_vals: Vec<_> = inactive_validator_set_handle()
+        .at(&pipeline_epoch)
+        .iter(&s)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+
+    assert_eq!(inactive_vals.len(), 3);
+    assert!(matches!(
+        &inactive_vals[0],
+        (lazy_map::NestedSubKey::Data {
+                key: ReverseOrdTokenAmount(stake),
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val5 && stake == &stake5 && *position == Position(1)
+    ));
+    assert!(matches!(
+        &inactive_vals[1],
+        (lazy_map::NestedSubKey::Data {
+                key: ReverseOrdTokenAmount(stake),
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val6 && stake == &stake6 && *position == Position(2)
+    ));
+    assert!(matches!(
+        &inactive_vals[2],
+        (
+            lazy_map::NestedSubKey::Data {
+                key: ReverseOrdTokenAmount(stake),
+                nested_sub_key: lazy_map::SubKey::Data(position),
+            },
+            address
+        )
+        if address == &val1 && stake == &stake1 && *position == Position(0)
+    ));
+
+    // Bond some stake to val5, it should be be swapped with the lowest active
+    // validator val2 into the active set
+    let bond = token::Amount::from(500_000);
+    let stake5 = stake5 + bond;
+    println!("val5 {val5} new stake {stake5}");
+    update_validator_set_new(&mut s, &params, &val5, bond.change(), epoch)
+        .unwrap();
+    update_validator_deltas(&mut s, &params, &val5, bond.change(), epoch)
+        .unwrap();
+
+    let active_vals: Vec<_> = active_validator_set_handle()
+        .at(&pipeline_epoch)
+        .iter(&s)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+
+    assert_eq!(active_vals.len(), 3);
+    assert!(matches!(
+        &active_vals[0],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val5 && stake == &stake5 && *position == Position(0)
+    ));
+    assert!(matches!(
+        &active_vals[1],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val3 && stake == &stake3 && *position == Position(0)
+    ));
+    assert!(matches!(
+        &active_vals[2],
+        (lazy_map::NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val4 && stake == &stake4 && *position == Position(0)
+    ));
+
+    let inactive_vals: Vec<_> = inactive_validator_set_handle()
+        .at(&pipeline_epoch)
+        .iter(&s)
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+
+    assert_eq!(inactive_vals.len(), 3);
+    assert!(matches!(
+        &inactive_vals[0],
+        (lazy_map::NestedSubKey::Data {
+                key: ReverseOrdTokenAmount(stake),
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val6 && stake == &stake6 && *position == Position(2)
+    ));
+    assert!(matches!(
+        &inactive_vals[1],
+        (lazy_map::NestedSubKey::Data {
+                key: ReverseOrdTokenAmount(stake),
+                nested_sub_key: lazy_map::SubKey::Data(position),
+        }, address)
+        if address == &val2 && stake == &stake2 && *position == Position(3)
+    ));
+    assert!(matches!(
+        &inactive_vals[2],
+        (
+            lazy_map::NestedSubKey::Data {
+                key: ReverseOrdTokenAmount(stake),
+                nested_sub_key: lazy_map::SubKey::Data(position),
+            },
+            address
+        )
+        if address == &val1 && stake == &stake1 && *position == Position(0)
     ));
 }
 

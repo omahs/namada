@@ -592,9 +592,9 @@ where
                     }
                 }
             }
-            let key = self.get_last_update_storage_key();
-            storage.write(&key, current_epoch)?;
         }
+        let key = self.get_last_update_storage_key();
+        storage.write(&key, current_epoch)?;
         Ok(())
     }
 
