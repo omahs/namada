@@ -550,6 +550,36 @@ pub enum SlashType {
     LightClientAttack,
 }
 
+/// Bonds and unbonds with all details (slashes and rewards, if any)
+#[derive(Debug, Clone, BorshDeserialize, BorshSerialize, BorshSchema)]
+pub struct BondsAndUnbondsDetails {
+    pub bonds: HashMap<Epoch, BondDetails>,
+    pub unbonds: HashMap<EpochRange, UnbondDetails>,
+}
+
+/// TODO
+#[derive(Debug, Clone, BorshDeserialize, BorshSerialize, BorshSchema)]
+pub struct EpochRange {
+    pub start: Epoch,
+    pub end: Epoch,
+}
+
+/// TODO
+#[derive(Debug, Clone, BorshDeserialize, BorshSerialize, BorshSchema)]
+pub struct BondDetails {
+    pub amount: token::Amount,
+    pub slashed_amount: Option<token::Amount>,
+    pub slashes: Slashes,
+}
+
+/// TODO
+#[derive(Debug, Clone, BorshDeserialize, BorshSerialize, BorshSchema)]
+pub struct UnbondDetails {
+    pub amount: token::Amount,
+    pub slashed_amount: Option<token::Amount>,
+    pub slashes: Slashes,
+}
+
 impl Display for BondId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(

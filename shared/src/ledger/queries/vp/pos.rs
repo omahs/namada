@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use namada_core::ledger::storage_api::collections::lazy_map;
 use namada_core::ledger::storage_api::OptionExt;
-use namada_proof_of_stake::types::{BondId, SlashNew, WeightedValidatorNew};
+use namada_proof_of_stake::types::{
+    BondId, BondsAndUnbondsDetails, SlashNew, WeightedValidatorNew,
+};
 use namada_proof_of_stake::{
     self, active_validator_set_handle, bond_amount_new, bond_handle,
     find_delegation_validators, find_delegations,
@@ -70,6 +72,9 @@ router! {POS,
 
     ( "withdrawable_tokens" / [source: Address] / [validator: Address] / [epoch: opt Epoch] )
         -> token::Amount = withdrawable_tokens,
+
+    ( "bonds_and_unbonds" / [source: opt Address] / [validator: opt Address] / [epoch: opt Epoch] )
+        -> BondsAndUnbondsDetails = bonds_and_unbonds,
 
 }
 
@@ -339,6 +344,19 @@ where
         }
     }
     Ok(total)
+}
+
+fn bonds_and_unbonds<D, H>(
+    ctx: RequestCtx<'_, D, H>,
+    source: Option<Address>,
+    validator: Option<Address>,
+    epoch: Option<Epoch>,
+) -> storage_api::Result<BondsAndUnbondsDetails>
+where
+    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+    H: 'static + StorageHasher + Sync,
+{
+    todo!()
 }
 
 // /// Get the total bond amount for the given bond ID (this may be delegation
