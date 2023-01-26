@@ -4,7 +4,7 @@ use namada_core::ledger::storage::types::{decode, encode};
 use namada_core::ledger::storage::{self, StorageHasher, WlStorage};
 use namada_core::ledger::storage_api::collections::lazy_map;
 use namada_core::types::address::Address;
-use namada_core::types::storage::{DbKeySeg, Key, KeySeg};
+use namada_core::types::storage::{DbKeySeg, Epoch, Key, KeySeg};
 use namada_core::types::{key, token};
 use rust_decimal::Decimal;
 
@@ -307,6 +307,38 @@ pub fn is_bond_key(key: &Key) -> Option<BondId> {
     }
 }
 
+/// Is storage key for a bond? Returns the bond ID and bond start epoch if it
+/// is.
+pub fn is_bond_key_new(key: &Key) -> Option<(BondId, Epoch)> {
+    if key.segments.len() > 6 {
+        match &key.segments[..6] {
+            [
+                DbKeySeg::AddressSeg(addr),
+                DbKeySeg::StringSeg(prefix),
+                DbKeySeg::AddressSeg(source),
+                DbKeySeg::AddressSeg(validator),
+                DbKeySeg::StringSeg(data),
+                DbKeySeg::StringSeg(epoch_str),
+            ] if addr == &ADDRESS
+                && prefix == BOND_STORAGE_KEY
+                && data == lazy_map::DATA_SUBKEY =>
+            {
+                let start = Epoch::parse(epoch_str.clone()).ok()?;
+                Some((
+                    BondId {
+                        source: source.clone(),
+                        validator: validator.clone(),
+                    },
+                    start,
+                ))
+            }
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
 /// Storage key prefix for all unbonds.
 pub fn unbonds_prefix() -> Key {
     Key::from(ADDRESS.to_db_key())
@@ -341,6 +373,43 @@ pub fn is_unbond_key(key: &Key) -> Option<BondId> {
             validator: validator.clone(),
         }),
         _ => None,
+    }
+}
+
+/// Is storage key for an unbond? Returns the bond ID and unbond start and
+/// withdraw epoch if it is.
+pub fn is_unbond_key_new(key: &Key) -> Option<(BondId, Epoch, Epoch)> {
+    if key.segments.len() > 8 {
+        match &key.segments[..8] {
+            [
+                DbKeySeg::AddressSeg(addr),
+                DbKeySeg::StringSeg(prefix),
+                DbKeySeg::AddressSeg(source),
+                DbKeySeg::AddressSeg(validator),
+                DbKeySeg::StringSeg(data_1),
+                DbKeySeg::StringSeg(withdraw_epoch_str),
+                DbKeySeg::StringSeg(data_2),
+                DbKeySeg::StringSeg(start_epoch_str),
+            ] if addr == &ADDRESS
+                && prefix == BOND_STORAGE_KEY
+                && data_1 == lazy_map::DATA_SUBKEY
+                && data_2 == lazy_map::DATA_SUBKEY =>
+            {
+                let withdraw = Epoch::parse(withdraw_epoch_str.clone()).ok()?;
+                let start = Epoch::parse(start_epoch_str.clone()).ok()?;
+                Some((
+                    BondId {
+                        source: source.clone(),
+                        validator: validator.clone(),
+                    },
+                    start,
+                    withdraw,
+                ))
+            }
+            _ => None,
+        }
+    } else {
+        None
     }
 }
 

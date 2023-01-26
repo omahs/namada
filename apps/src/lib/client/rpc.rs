@@ -1402,6 +1402,14 @@ pub async fn query_withdrawable_tokens(
 pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
     let epoch = query_epoch(args.query.clone()).await;
     let client = HttpClient::new(args.query.ledger_address).unwrap();
+
+    let x = unwrap_client_response(
+        RPC.vp()
+            .pos()
+            .bonds_and_unbonds(&client, &args.owner, &args.validator)
+            .await,
+    );
+
     match (args.owner, args.validator) {
         (Some(owner), Some(validator)) => {
             let source = ctx.get(&owner);

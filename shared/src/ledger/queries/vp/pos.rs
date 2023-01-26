@@ -73,7 +73,7 @@ router! {POS,
     ( "withdrawable_tokens" / [source: Address] / [validator: Address] / [epoch: opt Epoch] )
         -> token::Amount = withdrawable_tokens,
 
-    ( "bonds_and_unbonds" / [source: opt Address] / [validator: opt Address] / [epoch: opt Epoch] )
+    ( "bonds_and_unbonds" / [source: opt Address] / [validator: opt Address] )
         -> BondsAndUnbondsDetails = bonds_and_unbonds,
 
 }
@@ -350,13 +350,12 @@ fn bonds_and_unbonds<D, H>(
     ctx: RequestCtx<'_, D, H>,
     source: Option<Address>,
     validator: Option<Address>,
-    epoch: Option<Epoch>,
 ) -> storage_api::Result<BondsAndUnbondsDetails>
 where
     D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
     H: 'static + StorageHasher + Sync,
 {
-    todo!()
+    namada_proof_of_stake::bonds_and_unbonds(ctx.wl_storage, source, validator)
 }
 
 // /// Get the total bond amount for the given bond ID (this may be delegation

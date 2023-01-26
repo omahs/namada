@@ -527,7 +527,18 @@ pub type Slashes = Vec<Slash>;
 
 /// A slash applied to validator, to punish byzantine behavior by removing
 /// their staked tokens at and before the epoch of the slash.
-#[derive(Debug, Clone, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(
+    Debug,
+    Clone,
+    BorshDeserialize,
+    BorshSerialize,
+    BorshSchema,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+)]
 pub struct SlashNew {
     /// Epoch at which the slashable event occurred.
     pub epoch: Epoch,
@@ -542,7 +553,18 @@ pub struct SlashNew {
 pub type SlashesNew = LazyVec<SlashNew>;
 
 /// A type of slashsable event.
-#[derive(Debug, Clone, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(
+    Debug,
+    Clone,
+    BorshDeserialize,
+    BorshSerialize,
+    BorshSchema,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+)]
 pub enum SlashType {
     /// Duplicate block vote.
     DuplicateVote,
@@ -551,33 +573,45 @@ pub enum SlashType {
 }
 
 /// Bonds and unbonds with all details (slashes and rewards, if any)
+/// grouped by their bond IDs.
+pub type BondsAndUnbondsDetails = HashMap<BondId, BondsAndUnbondsDetail>;
+
+/// Bonds and unbonds with all details (slashes and rewards, if any)
 #[derive(Debug, Clone, BorshDeserialize, BorshSerialize, BorshSchema)]
-pub struct BondsAndUnbondsDetails {
-    pub bonds: HashMap<Epoch, BondDetails>,
-    pub unbonds: HashMap<EpochRange, UnbondDetails>,
+pub struct BondsAndUnbondsDetail {
+    /// Bonds
+    pub bonds: Vec<BondDetails>,
+    /// Unbonds
+    pub unbonds: Vec<UnbondDetails>,
+    /// Slashes
+    pub slashes: Vec<SlashNew>,
 }
 
-/// TODO
-#[derive(Debug, Clone, BorshDeserialize, BorshSerialize, BorshSchema)]
-pub struct EpochRange {
-    pub start: Epoch,
-    pub end: Epoch,
-}
-
-/// TODO
+/// Bond with all its details
 #[derive(Debug, Clone, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct BondDetails {
+    /// The first epoch in which this bond contributed to a stake
+    pub start: Epoch,
+    /// Token amount
     pub amount: token::Amount,
+    /// Token amount that has been slashed, if any
     pub slashed_amount: Option<token::Amount>,
-    pub slashes: Slashes,
 }
 
-/// TODO
+/// Unbond with all its details
 #[derive(Debug, Clone, BorshDeserialize, BorshSerialize, BorshSchema)]
 pub struct UnbondDetails {
+    /// The first epoch in which the source bond of this unbond contributed to
+    /// a stake
+    pub start: Epoch,
+    /// The first epoch in which this unbond can be withdrawn. Note that the
+    /// epoch in which the unbond stopped contributing to the stake is
+    /// `unbonding_len` param value before this epoch
+    pub withdraw: Epoch,
+    /// Token amount
     pub amount: token::Amount,
+    /// Token amount that has been slashed, if any
     pub slashed_amount: Option<token::Amount>,
-    pub slashes: Slashes,
 }
 
 impl Display for BondId {
@@ -700,6 +734,21 @@ pub fn decimal_mult_i128(dec: Decimal, int: i128) -> i128 {
     let prod = dec * Decimal::from(int);
     // truncate the number to the floor
     prod.to_i128().expect("Product is out of bounds")
+}
+
+pub fn mult_change_to_amount(
+    dec: Decimal,
+    change: token::Change,
+) -> token::Amount {
+    let prod = dec * Decimal::from(change);
+    // truncate the number to the floor
+    token::Amount::from(prod.to_u64().expect("Product is out of bounds"))
+}
+
+pub fn mult_amount(dec: Decimal, amount: token::Amount) -> token::Amount {
+    let prod = dec * Decimal::from(amount);
+    // truncate the number to the floor
+    token::Amount::from(prod.to_u64().expect("Product is out of bounds"))
 }
 
 /// Calculate voting power in the tendermint context (which is stored as i64)
