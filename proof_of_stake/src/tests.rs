@@ -40,8 +40,8 @@ use crate::{
     read_num_active_validators, read_total_stake, read_validator_delta_value,
     read_validator_stake, staking_token_address, total_deltas_handle,
     unbond_handle, unbond_tokens_new, update_validator_deltas,
-    update_validator_set_new, validator_deltas_handle, validator_state_handle,
-    withdraw_tokens_new, write_validator_address_raw_hash,
+    update_validator_set_new, validator_state_handle, withdraw_tokens_new,
+    write_validator_address_raw_hash,
 };
 
 proptest! {
@@ -804,8 +804,8 @@ fn test_validator_sets() {
         if address == &val5 && stake == &stake5 && *position == Position(1)
     ));
 
-    /// Unbond some stake from val1, it should be be swapped with the greatest
-    /// inactive validator val2 into the inactive set
+    // Unbond some stake from val1, it should be be swapped with the greatest
+    // inactive validator val2 into the inactive set
     let unbond = token::Amount::from(500_000);
     let stake1 = stake1 - unbond;
     println!("val1 {val1} new stake {stake1}");

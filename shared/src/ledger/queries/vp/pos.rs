@@ -265,19 +265,21 @@ where
     let params = read_pos_params(ctx.wl_storage)?;
 
     let handle = unbond_handle(&source, &validator);
-    let mut unbonds = HashMap::<(Epoch, Epoch), token::Amount>::new();
-
-    for unbond in handle.iter(ctx.wl_storage)? {
-        let (
-            lazy_map::NestedSubKey::Data {
-                key: withdraw_epoch,
-                nested_sub_key: lazy_map::SubKey::Data(bond_epoch),
-            },
-            amount,
-        ) = unbond?;
-        unbonds.insert((bond_epoch, withdraw_epoch), amount);
-    }
-    Ok(unbonds)
+    let unbonds = handle
+        .iter(ctx.wl_storage)?
+        .map(|next_result| {
+            next_result.map(
+                |(
+                    lazy_map::NestedSubKey::Data {
+                        key: withdraw_epoch,
+                        nested_sub_key: lazy_map::SubKey::Data(bond_epoch),
+                    },
+                    amount,
+                )| ((bond_epoch, withdraw_epoch), amount),
+            )
+        })
+        .collect();
+    unbonds
 }
 
 fn unbond_with_slashing<D, H>(
@@ -291,20 +293,23 @@ where
 {
     let params = read_pos_params(ctx.wl_storage)?;
 
+    // TODO slashes
     let handle = unbond_handle(&source, &validator);
-    let mut unbonds = HashMap::<(Epoch, Epoch), token::Amount>::new();
-
-    for unbond in handle.iter(ctx.wl_storage)? {
-        let (
-            lazy_map::NestedSubKey::Data {
-                key: withdraw_epoch,
-                nested_sub_key: lazy_map::SubKey::Data(bond_epoch),
-            },
-            amount,
-        ) = unbond?;
-        unbonds.insert((bond_epoch, withdraw_epoch), amount);
-    }
-    Ok(unbonds)
+    let unbonds = handle
+        .iter(ctx.wl_storage)?
+        .map(|next_result| {
+            next_result.map(
+                |(
+                    lazy_map::NestedSubKey::Data {
+                        key: withdraw_epoch,
+                        nested_sub_key: lazy_map::SubKey::Data(bond_epoch),
+                    },
+                    amount,
+                )| ((bond_epoch, withdraw_epoch), amount),
+            )
+        })
+        .collect();
+    unbonds
 }
 
 fn withdrawable_tokens<D, H>(
@@ -396,10 +401,6 @@ where
     D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
     H: 'static + StorageHasher + Sync,
 {
-    let mut slashes: Vec<SlashNew> = Vec::new();
     let slash_handle = validator_slashes_handle(&validator);
-    for slash in slash_handle.iter(ctx.wl_storage)? {
-        slashes.push(slash?);
-    }
-    Ok(slashes)
+    slash_handle.iter(ctx.wl_storage)?.collect()
 }

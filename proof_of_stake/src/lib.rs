@@ -3545,7 +3545,7 @@ where
                 )
             })?;
         let amount = bond_handle(owner, &validator_address)
-            .get_sum(storage, epoch.clone(), &params)?
+            .get_sum(storage, *epoch, &params)?
             .unwrap_or_default();
         delegations
             .insert(validator_address, token::Amount::from_change(amount));

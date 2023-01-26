@@ -631,6 +631,7 @@ where
         LazyMap::open(key)
     }
 
+    /// Read all the data into a `HashMap`
     pub fn to_hashmap<S>(
         &self,
         storage: &S,
@@ -639,12 +640,7 @@ where
         S: StorageRead,
     {
         let handle = self.get_data_handler();
-        let mut hashmap: HashMap<Epoch, Data> = HashMap::new();
-        for next in handle.iter(storage)? {
-            let (epoch, data) = next?;
-            hashmap.insert(epoch, data);
-        }
-        Ok(hashmap)
+        handle.iter(storage)?.collect()
     }
 
     fn sub_past_epochs(epoch: Epoch) -> Epoch {
