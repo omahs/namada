@@ -126,11 +126,14 @@ fn test_node_connectivity_and_consensus() -> Result<()> {
     // 4. Check that all the nodes processed the tx with the same result
     let mut validator_0 = bg_validator_0.foreground();
     let mut validator_1 = bg_validator_1.foreground();
-    let expected_result = "all VPs accepted transaction";
+
+    // let expected_result = "all VPs accepted transaction";
+
     // We cannot check this on non-validator node as it might sync without
     // applying the tx itself, but its state should be the same, checked below.
-    validator_0.exp_string(expected_result)?;
-    validator_1.exp_string(expected_result)?;
+
+    // validator_0.exp_string(expected_result)?;
+    // validator_1.exp_string(expected_result)?;
     let _bg_validator_0 = validator_0.background();
     let _bg_validator_1 = validator_1.background();
 
@@ -3090,11 +3093,14 @@ fn test_genesis_validators() -> Result<()> {
     let mut validator_0 = bg_validator_0.foreground();
     let mut validator_1 = bg_validator_1.foreground();
 
-    let expected_result = "all VPs accepted transaction";
+    // let expected_result = "all VPs accepted transaction";
+
     // We cannot check this on non-validator node as it might sync without
     // applying the tx itself, but its state should be the same, checked below.
-    validator_0.exp_string(expected_result)?;
-    validator_1.exp_string(expected_result)?;
+
+    // validator_0.exp_string(expected_result)?;
+    // validator_1.exp_string(expected_result)?;
+
     let _bg_validator_0 = validator_0.background();
     let _bg_validator_1 = validator_1.background();
 

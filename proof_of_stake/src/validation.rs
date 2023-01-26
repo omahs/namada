@@ -19,7 +19,7 @@ use crate::parameters::PosParams;
 use crate::types::{
     decimal_mult_i128, decimal_mult_u64, BondId, Bonds, CommissionRates, Slash,
     Slashes, TotalDeltas, Unbonds, ValidatorConsensusKeys, ValidatorDeltas,
-    ValidatorSets, ValidatorState, ValidatorStates, WeightedValidator,
+    ValidatorSets, ValidatorStates, WeightedValidator,
 };
 
 #[allow(missing_docs)]
@@ -761,24 +761,22 @@ impl Validate {
                 if post.last_update() != constants.current_epoch {
                     errors.push(Error::InvalidLastUpdate)
                 }
-                // Before pipeline epoch, the state must be `Pending`
+                // Before pipeline epoch, the state must be None
                 for epoch in Epoch::iter_range(
                     constants.current_epoch,
                     constants.pipeline_offset,
                 ) {
-                    match post.get(epoch) {
-                        Some(ValidatorState::Pending) => {}
-                        _ => errors.push(Error::InvalidNewValidatorState(
+                    if post.get(epoch).is_some() {
+                        errors.push(Error::InvalidNewValidatorState(
                             epoch.into(),
-                        )),
+                        ));
                     }
                 }
-                // At pipeline epoch, the state must be `Candidate`
-                match post.get(constants.pipeline_epoch) {
-                    Some(ValidatorState::Candidate) => {}
-                    _ => errors.push(Error::InvalidNewValidatorState(
+                // At pipeline epoch, the state must be Some(ValidatorState)
+                if post.get(constants.pipeline_epoch).is_none() {
+                    errors.push(Error::InvalidNewValidatorState(
                         constants.pipeline_epoch.into(),
-                    )),
+                    ));
                 }
                 // Add the validator to the accumulator
                 let validator = new_validators.entry(address).or_default();
@@ -788,34 +786,45 @@ impl Validate {
                 if post.last_update() != constants.current_epoch {
                     errors.push(Error::InvalidLastUpdate)
                 }
-                use ValidatorState::*;
-                // Before pipeline epoch, the only allowed state change
-                // is from `Inactive` to `Pending`
+
+                // Before pipeline epoch, no state changes are allowed
                 for epoch in Epoch::iter_range(
                     constants.current_epoch,
                     constants.pipeline_offset,
                 ) {
-                    match (pre.get(epoch), post.get(epoch)) {
-                        (Some(Inactive), Some(Pending)) => {}
-                        (Some(state_pre), Some(state_post))
-                            if state_pre == state_post => {}
-                        _ => errors.push(Error::InvalidValidatorStateUpdate(
+                    if pre.get(epoch) != post.get(epoch) {
+                        errors.push(Error::InvalidValidatorStateUpdate(
                             epoch.into(),
-                        )),
+                        ));
                     }
                 }
-                // Check allowed state changes at pipeline epoch
-                match (
-                    pre.get(constants.pipeline_epoch),
-                    post.get(constants.pipeline_epoch),
-                ) {
-                    (Some(Pending), Some(Candidate) | Some(Inactive))
-                    | (Some(Candidate), Some(Inactive))
-                    | (Some(Inactive), Some(Candidate) | Some(Pending)) => {}
-                    _ => errors.push(Error::InvalidNewValidatorState(
+
+                // Check allowed state changes at pipeline epoch - the state
+                // cannot be deleted
+                if pre.get(constants.pipeline_epoch).is_some()
+                    && post.get(constants.pipeline_epoch).is_none()
+                {
+                    errors.push(Error::InvalidNewValidatorState(
                         constants.pipeline_epoch.into(),
-                    )),
+                    ));
                 }
+
+                // match (
+                //     pre.get(constants.pipeline_epoch),
+                //     post.get(constants.pipeline_epoch),
+                // ) {
+                //     (Some(_), Some(_))
+                //     | (
+                //         None,
+                //         Some(Consensus) | Some(BelowCapacity) |
+                // Some(Inactive),     )
+                //     | (Some(Consensus) | Some(BelowCapacity), Some(Inactive))
+                //     | (Some(Inactive), Some(Consensus) | Some(BelowCapacity))
+                // =>         {}
+                //     _ => errors.push(Error::InvalidNewValidatorState(
+                //         constants.pipeline_epoch.into(),
+                //     )),
+                // }
             }
             (Some(_), None) => {
                 errors.push(Error::ValidatorStateIsRequired(address))

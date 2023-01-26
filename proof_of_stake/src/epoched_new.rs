@@ -1,6 +1,7 @@
 //! [`Epoched`] and [`EpochedDelta`] are structures for data that is set for
 //! future (and possibly past) epochs.
 
+use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 use std::ops;
@@ -58,6 +59,11 @@ where
             data: PhantomData,
             phantom_son: PhantomData,
         }
+    }
+
+    /// Return the number of past epochs to keep data for
+    pub fn get_num_past_epochs() -> u64 {
+        NUM_PAST_EPOCHS
     }
 }
 
@@ -623,6 +629,22 @@ where
             .push(&LAZY_MAP_SUB_KEY.to_owned())
             .unwrap();
         LazyMap::open(key)
+    }
+
+    pub fn to_hashmap<S>(
+        &self,
+        storage: &S,
+    ) -> storage_api::Result<HashMap<Epoch, Data>>
+    where
+        S: StorageRead,
+    {
+        let handle = self.get_data_handler();
+        let mut hashmap: HashMap<Epoch, Data> = HashMap::new();
+        for next in handle.iter(storage)? {
+            let (epoch, data) = next?;
+            hashmap.insert(epoch, data);
+        }
+        Ok(hashmap)
     }
 
     fn sub_past_epochs(epoch: Epoch) -> Epoch {

@@ -76,8 +76,8 @@ impl ValidatorSetPositionsNew {
 /// Epoched validator's consensus key.
 pub type ValidatorConsensusKeysNew = crate::epoched_new::Epoched<
     common::PublicKey,
-    // crate::epoched_new::OffsetPipelineLen,
-    crate::epoched_new::OffsetReallyLarge,
+    crate::epoched_new::OffsetPipelineLen,
+    // crate::epoched_new::OffsetReallyLarge,
 >;
 
 /// Epoched validator's state.
@@ -101,8 +101,8 @@ pub type InactiveValidatorSetNew =
 /// Epoched active validator sets.
 pub type ActiveValidatorSetsNew = crate::epoched_new::NestedEpoched<
     ActiveValidatorSetNew,
-    // crate::epoched_new::OffsetPipelineLen,
-    crate::epoched_new::OffsetReallyLarge,
+    crate::epoched_new::OffsetPipelineLen,
+    // crate::epoched_new::OffsetReallyLarge,
 >;
 
 impl ActiveValidatorSetsNew {
@@ -463,14 +463,14 @@ impl Position {
     Eq,
 )]
 pub enum ValidatorState {
-    /// Inactive validator may not participate in the consensus.
+    /// A validator who may participate in the consensus
+    Consensus,
+    /// A validator who does not have enough stake to be considered in the
+    /// `Consensus` validator set but still may have active bonds and unbonds
+    BelowCapacity,
+    /// A validator who is deactivated via a tx when a validator no longer
+    /// wants to be one (not implemented yet)
     Inactive,
-    /// A `Pending` validator will become `Candidate` in a future epoch.
-    Pending,
-    /// A `Candidate` validator may participate in the consensus. It is either
-    /// in the active or inactive validator set.
-    Candidate,
-    // TODO consider adding `Jailed`
 }
 
 /// A bond is either a validator's self-bond or a delegation from a regular

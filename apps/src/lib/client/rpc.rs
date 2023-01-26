@@ -1,5 +1,6 @@
 //! Client RPC queries
 
+use core::slice::SlicePattern;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -35,6 +36,7 @@ use namada::ledger::pos::{
 };
 use namada::ledger::queries::{self, RPC};
 use namada::ledger::storage::ConversionState;
+use namada::proof_of_stake::types::SlashNew;
 use namada::proto::{SignedTxData, Tx};
 use namada::types::address::{masp, tokens, Address};
 use namada::types::governance::{
@@ -1407,19 +1409,31 @@ pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
             // Find owner's delegations to the given validator
             let bond_id = pos::BondId { source, validator };
             let bond_key = pos::bond_key(&bond_id);
-            let bonds =
-                query_storage_value::<pos::Bonds>(&client, &bond_key).await;
+
+            // TODO: do we want to return the bond deltas by epoch instead?
+            let bond_amount: token::Amount = unwrap_client_response(
+                RPC.vp()
+                    .pos()
+                    .bond_with_slashing(&client, &source, &validator, &epoch)
+                    .await,
+            );
+            // let bonds =
+            //     query_storage_value::<pos::Bonds>(&client, &bond_key).await;
+
             // Find owner's unbonded delegations from the given
             // validator
-            let unbond_key = pos::unbond_key(&bond_id);
-            let unbonds =
-                query_storage_value::<pos::Unbonds>(&client, &unbond_key).await;
+            let unbonds: HashMap<(Epoch, Epoch), token::Amount> =
+                unwrap_client_response(
+                    RPC.vp()
+                        .pos()
+                        .unbond_new(&client, &source, &validator)
+                        .await,
+                );
+
             // Find validator's slashes, if any
-            let slashes_key = pos::validator_slashes_key(&bond_id.validator);
-            let slashes =
-                query_storage_value::<pos::Slashes>(&client, &slashes_key)
-                    .await
-                    .unwrap_or_default();
+            let slashes: Vec<SlashNew> = unwrap_client_response(
+                RPC.vp().pos().validator_slashes(&client, &validator).await,
+            );
 
             let stdout = io::stdout();
             let mut w = stdout.lock();
@@ -1432,7 +1446,13 @@ pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
                 };
                 writeln!(w, "{}:", bond_type).unwrap();
                 process_bonds_query(
-                    bonds, &slashes, &epoch, None, None, None, &mut w,
+                    bonds,
+                    slashes.as_slice(),
+                    &epoch,
+                    None,
+                    None,
+                    None,
+                    &mut w,
                 );
             }
 
@@ -1444,7 +1464,13 @@ pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
                 };
                 writeln!(w, "{}:", bond_type).unwrap();
                 process_unbonds_query(
-                    unbonds, &slashes, &epoch, None, None, None, &mut w,
+                    unbonds,
+                    slashes.as_slice(),
+                    &epoch,
+                    None,
+                    None,
+                    None,
+                    &mut w,
                 );
             }
 
@@ -1944,7 +1970,7 @@ pub async fn query_delegations(ctx: Context, args: args::QueryDelegations) {
     let client = HttpClient::new(args.query.ledger_address).unwrap();
     let owner = ctx.get(&args.owner);
     let delegations = unwrap_client_response(
-        RPC.vp().pos().delegations(&client, &owner).await,
+        RPC.vp().pos().delegation_validators(&client, &owner).await,
     );
     if delegations.is_empty() {
         println!("No delegations found");
@@ -2100,12 +2126,12 @@ fn apply_slashes(
     delta
 }
 
-/// Process the result of a blonds query to determine total bonds
+/// Process the result of a bonds query to determine total bonds
 /// and total active bonds. This includes taking into account
 /// an aggregation of slashes since the start of the given epoch.
 fn process_bonds_query(
     bonds: &Bonds,
-    slashes: &[Slash],
+    slashes: &[SlashNew],
     epoch: &Epoch,
     source: Option<&Address>,
     total: Option<token::Amount>,
@@ -2141,13 +2167,69 @@ fn process_bonds_query(
     (total, total_active)
 }
 
+/// Process the result of a bonds query to determine total bonds
+/// and total active bonds. This includes taking into account
+/// an aggregation of slashes since the start of the given epoch.
+fn process_bonds_query_new(
+    bonds: &Bonds,
+    slashes: &[SlashNew],
+    epoch: &Epoch,
+    source: Option<&Address>,
+    total: Option<token::Amount>,
+    total_active: Option<token::Amount>,
+    w: &mut std::io::StdoutLock,
+) -> (token::Amount, token::Amount) {
+    let mut total_active = total_active.unwrap_or_else(|| 0.into());
+    let mut current_total: token::Amount = 0.into();
+
+    let (current_total, total_active): (token::Amount, token::Amount) =
+        unwrap_client_response(
+            RPC.vp()
+                .pos()
+                .bond_with_slashing(&client, &source, &validator, &epoch)
+                .await,
+        );
+    let bonds_remaining = unwrap_client_response(
+        RPC.vp()
+            .pos()
+            .bond_deltas(&client, &source, &validator, &epoch)
+            .await,
+    );
+
+    // for bond in bonds.iter() {
+    //     for (epoch_start, &(mut delta)) in bond.pos_deltas.iter().sorted() {
+    //         writeln!(w, "  Active from epoch {}: Δ {}", epoch_start, delta)
+    //             .unwrap();
+    //         delta = apply_slashes(slashes, delta, *epoch_start, None,
+    // Some(w));         current_total += delta;
+    //         if epoch >= epoch_start {
+    //             total_active += delta;
+    //         }
+    //     }
+    // }
+    // let total = total.unwrap_or_else(|| 0.into()) + current_total;
+    // match source {
+    //     Some(addr) => {
+    //         writeln!(w, "  Bonded total from {}: {}", addr, current_total)
+    //             .unwrap();
+    //     }
+    //     None => {
+    //         if total_active != 0.into() && total_active != total {
+    //             writeln!(w, "Active bonds total: {}", total_active).unwrap();
+    //         }
+    //         writeln!(w, "Bonds total: {}", total).unwrap();
+    //     }
+    // }
+    (total, total_active)
+}
+
 /// Process the result of an unbonds query to determine total bonds
 /// and total withdrawable bonds. This includes taking into account
 /// an aggregation of slashes since the start of the given epoch up
 /// until the withdrawal epoch.
 fn process_unbonds_query(
-    unbonds: &Unbonds,
-    slashes: &[Slash],
+    unbonds: &HashMap<(Epoch, Epoch), token::Amount>,
+    slashes: &[SlashNew],
     epoch: &Epoch,
     source: Option<&Address>,
     total: Option<token::Amount>,
@@ -2156,28 +2238,27 @@ fn process_unbonds_query(
 ) -> (token::Amount, token::Amount) {
     let mut withdrawable = total_withdrawable.unwrap_or_else(|| 0.into());
     let mut current_total: token::Amount = 0.into();
-    for deltas in unbonds.iter() {
-        for ((epoch_start, epoch_end), &(mut delta)) in
-            deltas.deltas.iter().sorted()
-        {
-            let withdraw_epoch = *epoch_end + 1_u64;
-            writeln!(
-                w,
-                "  Withdrawable from epoch {} (active from {}): Δ {}",
-                withdraw_epoch, epoch_start, delta
-            )
-            .unwrap();
-            delta = apply_slashes(
-                slashes,
-                delta,
-                *epoch_start,
-                Some(withdraw_epoch),
-                Some(w),
-            );
-            current_total += delta;
-            if epoch > epoch_end {
-                withdrawable += delta;
-            }
+
+    for ((epoch_start, epoch_end), &(mut delta)) in
+        deltas.deltas.iter().sorted()
+    {
+        let withdraw_epoch = *epoch_end + 1_u64;
+        writeln!(
+            w,
+            "  Withdrawable from epoch {} (active from {}): Δ {}",
+            withdraw_epoch, epoch_start, delta
+        )
+        .unwrap();
+        delta = apply_slashes(
+            slashes,
+            delta,
+            *epoch_start,
+            Some(withdraw_epoch),
+            Some(w),
+        );
+        current_total += delta;
+        if epoch > epoch_end {
+            withdrawable += delta;
         }
     }
     let total = total.unwrap_or_else(|| 0.into()) + current_total;
@@ -2905,7 +2986,9 @@ pub async fn get_delegators_delegation(
     client: &HttpClient,
     address: &Address,
 ) -> HashSet<Address> {
-    unwrap_client_response(RPC.vp().pos().delegations(client, address).await)
+    unwrap_client_response(
+        RPC.vp().pos().delegation_validators(client, address).await,
+    )
 }
 
 pub async fn get_governance_parameters(client: &HttpClient) -> GovParams {

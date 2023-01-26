@@ -124,6 +124,9 @@ fn test_init_genesis_aux(
     for (i, validator) in validators.into_iter().rev().enumerate() {
         println!("Validator {validator:?}");
 
+        let state = validator_state_handle(&validator.address)
+            .get(&s, start_epoch, &params)
+            .unwrap();
         if (i as u64) < params.max_validator_slots {
             // should be in active set
             let handle = active_validator_set_handle().at(&start_epoch);
@@ -133,6 +136,7 @@ fn test_init_genesis_aux(
                     addr == validator.address
                 }
             ));
+            assert_eq!(state, Some(ValidatorState::Consensus));
         } else {
             // TODO: one more set once we have `below_threshold`
 
@@ -144,13 +148,8 @@ fn test_init_genesis_aux(
                     addr == validator.address
                 }
             ));
+            assert_eq!(state, Some(ValidatorState::BelowCapacity));
         }
-
-        let state = validator_state_handle(&validator.address)
-            .get(&s, start_epoch, &params)
-            .unwrap();
-
-        assert_eq!(state, Some(ValidatorState::Candidate));
     }
 }
 
@@ -661,7 +660,8 @@ fn test_validator_sets() {
         &params,
         &val3,
         stake3,
-        pipeline_epoch,
+        epoch,
+        params.pipeline_len,
     )
     .unwrap();
     // Update deltas as they are needed for validator set updates
@@ -708,7 +708,8 @@ fn test_validator_sets() {
         &params,
         &val4,
         stake4,
-        pipeline_epoch,
+        epoch,
+        params.pipeline_len,
     )
     .unwrap();
     update_validator_deltas(&mut s, &params, &val4, stake4.change(), epoch)
@@ -771,7 +772,8 @@ fn test_validator_sets() {
         &params,
         &val5,
         stake5,
-        pipeline_epoch,
+        epoch,
+        params.pipeline_len,
     )
     .unwrap();
     update_validator_deltas(&mut s, &params, &val5, stake5.change(), epoch)
@@ -882,7 +884,8 @@ fn test_validator_sets() {
         &params,
         &val6,
         stake6,
-        pipeline_epoch,
+        epoch,
+        params.pipeline_len,
     )
     .unwrap();
     update_validator_deltas(&mut s, &params, &val6, stake6.change(), epoch)

@@ -1,12 +1,14 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use namada_core::ledger::storage_api::collections::lazy_map;
 use namada_core::ledger::storage_api::OptionExt;
-use namada_proof_of_stake::types::WeightedValidatorNew;
+use namada_proof_of_stake::types::{BondId, SlashNew, WeightedValidatorNew};
 use namada_proof_of_stake::{
-    self, active_validator_set_handle, bond_handle,
+    self, active_validator_set_handle, bond_amount_new, bond_handle,
+    find_delegation_validators, find_delegations,
     inactive_validator_set_handle, read_all_validator_addresses,
     read_pos_params, read_total_stake, read_validator_stake, unbond_handle,
+    validator_slashes_handle,
 };
 
 use crate::ledger::queries::types::RequestCtx;
@@ -15,6 +17,8 @@ use crate::ledger::{pos, storage_api};
 use crate::types::address::Address;
 use crate::types::storage::Epoch;
 use crate::types::token;
+
+type AmountPair = (token::Amount, token::Amount);
 
 // PoS validity predicate queries
 router! {POS,
@@ -26,6 +30,9 @@ router! {POS,
 
         ( "stake" / [validator: Address] / [epoch: opt Epoch] )
             -> Option<token::Amount> = validator_stake,
+
+        ( "slashes" / [validator: Address] )
+            -> Vec<SlashNew> = validator_slashes,
     },
 
     ( "validator_set" ) = {
@@ -44,10 +51,22 @@ router! {POS,
         -> token::Amount = total_stake,
 
     ( "delegations" / [owner: Address] )
-        -> HashSet<Address> = delegations,
+        -> HashSet<Address> = delegation_validators,
+
+    ( "bond_deltas" / [source: Address] / [validator: Address] )
+        -> HashMap<Epoch, token::Change> = bond_deltas,
 
     ( "bond" / [source: Address] / [validator: Address] / [epoch: opt Epoch] )
         -> token::Amount = bond_new,
+
+    ( "bond_with_slashing" / [source: Address] / [validator: Address] / [epoch: opt Epoch] )
+        -> AmountPair = bond_with_slashing,
+
+    ( "unbond" / [source: Address] / [validator: Address] )
+        -> HashMap<(Epoch, Epoch), token::Amount> = unbond_new,
+
+    ( "unbond_with_slashing" / [source: Address] / [validator: Address] )
+        -> HashMap<(Epoch, Epoch), token::Amount> = unbond_with_slashing,
 
     ( "withdrawable_tokens" / [source: Address] / [validator: Address] / [epoch: opt Epoch] )
         -> token::Amount = withdrawable_tokens,
@@ -65,10 +84,6 @@ where
     D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
     H: 'static + StorageHasher + Sync,
 {
-    println!(
-        "\nLOOKING UP VALIDATOR IN EPOCH {}\n",
-        ctx.wl_storage.storage.block.epoch
-    );
     let params = namada_proof_of_stake::read_pos_params(ctx.wl_storage)?;
     namada_proof_of_stake::is_validator(
         ctx.wl_storage,
@@ -189,7 +204,18 @@ where
     read_total_stake(ctx.wl_storage, &params, epoch)
 }
 
-/// TODO: new bond thing
+fn bond_deltas<D, H>(
+    ctx: RequestCtx<'_, D, H>,
+    source: Address,
+    validator: Address,
+) -> storage_api::Result<HashMap<Epoch, token::Change>>
+where
+    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+    H: 'static + StorageHasher + Sync,
+{
+    bond_handle(&source, &validator).to_hashmap(ctx.wl_storage)
+}
+
 fn bond_new<D, H>(
     ctx: RequestCtx<'_, D, H>,
     source: Address,
@@ -200,7 +226,7 @@ where
     D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
     H: 'static + StorageHasher + Sync,
 {
-    let epoch = dbg!(epoch.unwrap_or(ctx.wl_storage.storage.last_epoch));
+    let epoch = epoch.unwrap_or(ctx.wl_storage.storage.last_epoch);
     let params = read_pos_params(ctx.wl_storage)?;
 
     let handle = bond_handle(&source, &validator);
@@ -208,6 +234,77 @@ where
         .get_sum(ctx.wl_storage, epoch, &params)?
         .map(token::Amount::from_change)
         .ok_or_err_msg("Cannot find bond")
+}
+
+fn bond_with_slashing<D, H>(
+    ctx: RequestCtx<'_, D, H>,
+    source: Address,
+    validator: Address,
+    epoch: Option<Epoch>,
+) -> storage_api::Result<AmountPair>
+where
+    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+    H: 'static + StorageHasher + Sync,
+{
+    let epoch = epoch.unwrap_or(ctx.wl_storage.storage.last_epoch);
+    let params = read_pos_params(ctx.wl_storage)?;
+    let bond_id = BondId { source, validator };
+
+    bond_amount_new(ctx.wl_storage, &params, &bond_id, epoch)
+}
+
+fn unbond_new<D, H>(
+    ctx: RequestCtx<'_, D, H>,
+    source: Address,
+    validator: Address,
+) -> storage_api::Result<HashMap<(Epoch, Epoch), token::Amount>>
+where
+    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+    H: 'static + StorageHasher + Sync,
+{
+    let params = read_pos_params(ctx.wl_storage)?;
+
+    let handle = unbond_handle(&source, &validator);
+    let mut unbonds = HashMap::<(Epoch, Epoch), token::Amount>::new();
+
+    for unbond in handle.iter(ctx.wl_storage)? {
+        let (
+            lazy_map::NestedSubKey::Data {
+                key: withdraw_epoch,
+                nested_sub_key: lazy_map::SubKey::Data(bond_epoch),
+            },
+            amount,
+        ) = unbond?;
+        unbonds.insert((bond_epoch, withdraw_epoch), amount);
+    }
+    Ok(unbonds)
+}
+
+fn unbond_with_slashing<D, H>(
+    ctx: RequestCtx<'_, D, H>,
+    source: Address,
+    validator: Address,
+) -> storage_api::Result<HashMap<(Epoch, Epoch), token::Amount>>
+where
+    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+    H: 'static + StorageHasher + Sync,
+{
+    let params = read_pos_params(ctx.wl_storage)?;
+
+    let handle = unbond_handle(&source, &validator);
+    let mut unbonds = HashMap::<(Epoch, Epoch), token::Amount>::new();
+
+    for unbond in handle.iter(ctx.wl_storage)? {
+        let (
+            lazy_map::NestedSubKey::Data {
+                key: withdraw_epoch,
+                nested_sub_key: lazy_map::SubKey::Data(bond_epoch),
+            },
+            amount,
+        ) = unbond?;
+        unbonds.insert((bond_epoch, withdraw_epoch), amount);
+    }
+    Ok(unbonds)
 }
 
 fn withdrawable_tokens<D, H>(
@@ -264,7 +361,7 @@ where
 
 /// Find all the validator addresses to whom the given `owner` address has
 /// some delegation in any epoch
-fn delegations<D, H>(
+fn delegation_validators<D, H>(
     ctx: RequestCtx<'_, D, H>,
     owner: Address,
 ) -> storage_api::Result<HashSet<Address>>
@@ -272,21 +369,37 @@ where
     D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
     H: 'static + StorageHasher + Sync,
 {
-    let bonds_prefix = pos::bonds_for_source_prefix(&owner);
+    find_delegation_validators(ctx.wl_storage, &owner)
+}
 
-    // TODO update
-    let mut delegations: HashSet<Address> = HashSet::new();
-    for iter_result in
-        storage_api::iter_prefix_bytes(ctx.wl_storage, &bonds_prefix)?
-    {
-        let (key, _bonds_bytes) = iter_result?;
-        let validator_address = pos::get_validator_address_from_bond(&key)
-            .ok_or_else(|| {
-                storage_api::Error::new_const(
-                    "Delegation key should contain validator address.",
-                )
-            })?;
-        delegations.insert(validator_address);
+/// Find all the validator addresses to whom the given `owner` address has
+/// some delegation in any epoch
+fn delegations<D, H>(
+    ctx: RequestCtx<'_, D, H>,
+    owner: Address,
+    epoch: Option<Epoch>,
+) -> storage_api::Result<HashMap<Address, token::Amount>>
+where
+    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+    H: 'static + StorageHasher + Sync,
+{
+    let epoch = epoch.unwrap_or(ctx.wl_storage.storage.last_epoch);
+    find_delegations(ctx.wl_storage, &owner, &epoch)
+}
+
+/// Validator slashes
+fn validator_slashes<D, H>(
+    ctx: RequestCtx<'_, D, H>,
+    validator: Address,
+) -> storage_api::Result<Vec<SlashNew>>
+where
+    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+    H: 'static + StorageHasher + Sync,
+{
+    let mut slashes: Vec<SlashNew> = Vec::new();
+    let slash_handle = validator_slashes_handle(&validator);
+    for slash in slash_handle.iter(ctx.wl_storage)? {
+        slashes.push(slash?);
     }
-    Ok(delegations)
+    Ok(slashes)
 }

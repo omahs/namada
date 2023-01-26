@@ -47,6 +47,7 @@ use once_cell::unsync::Lazy;
 use parameters::PosParams;
 use rust_decimal::Decimal;
 use storage::{
+    bonds_for_source_prefix, get_validator_address_from_bond,
     into_tm_voting_power, num_active_validators_key, params_key,
     validator_address_raw_hash_key, validator_max_commission_rate_change_key,
     ReverseOrdTokenAmount, WeightedValidatorNew,
@@ -839,6 +840,8 @@ pub trait PosBase {
                         );
                         return None;
                     }
+                    // TODO: WILL BE DEPRECATED SO JUST PUTTING INACTIVE TO
+                    // COMPILE
                     if validator.bonded_stake == 0 {
                         // If the validator was `Pending` in the previous epoch,
                         // it means that it just was just added to validator
@@ -846,7 +849,7 @@ pub trait PosBase {
                         if let Some(state) =
                             self.read_validator_state(&validator.address)
                         {
-                            if let Some(ValidatorState::Pending) =
+                            if let Some(ValidatorState::Inactive) =
                                 state.get(prev_epoch)
                             {
                                 println!(
@@ -881,6 +884,8 @@ pub trait PosBase {
                     if prev_validators.inactive.contains(validator) {
                         return None;
                     }
+                    // TODO: WILL BE DEPRECATED SO JUST PUTTING INACTIVE TO
+                    // COMPILE
                     if validator.bonded_stake == 0 {
                         // If the validator was `Pending` in the previous epoch,
                         // it means that it just was just added to validator
@@ -888,7 +893,7 @@ pub trait PosBase {
                         if let Some(state) =
                             self.read_validator_state(&validator.address)
                         {
-                            if let Some(ValidatorState::Pending) =
+                            if let Some(ValidatorState::Inactive) =
                                 state.get(prev_epoch)
                             {
                                 return None;
@@ -1134,8 +1139,9 @@ fn init_genesis<'a>(
                 Epoched::init_at_genesis(consensus_key.clone(), current_epoch);
             let commission_rate =
                 Epoched::init_at_genesis(*commission_rate, current_epoch);
+            // WILL BE DEPRECATED SO JUST PUTTING INACTIVE TO GET TO COMPILE
             let state = Epoched::init_at_genesis(
-                ValidatorState::Candidate,
+                ValidatorState::Inactive,
                 current_epoch,
             );
             let token_delta = token::Change::from(*tokens);
@@ -1255,9 +1261,10 @@ fn become_validator(
     let consensus_key =
         Epoched::init(consensus_key.clone(), current_epoch, params);
 
-    let mut state =
-        Epoched::init_at_genesis(ValidatorState::Pending, current_epoch);
-    state.set(ValidatorState::Candidate, current_epoch, params);
+    // WILL BE DEPRECATED BUT PUTTING A VAL HERE TO COMPILE CODE
+    let state =
+        Epoched::init_at_genesis(ValidatorState::Inactive, current_epoch);
+    // state.set(ValidatorState::Candidate, current_epoch, params);
 
     let deltas = EpochedDelta::init_at_offset(
         Default::default(),
@@ -1799,20 +1806,16 @@ where
     {
         total_bonded += tokens;
 
-        validator_state_handle(&address).init_at_genesis(
-            storage,
-            ValidatorState::Candidate,
-            current_epoch,
-        )?;
-
         // Insert the validator into a validator set and write its epoched
         // validator data
+        // TODO: ValidatorState inside of here
         insert_validator_into_validator_set(
             storage,
             params,
             &address,
             tokens,
             current_epoch,
+            0,
         )?;
 
         // Write other validator data to storage
@@ -2288,11 +2291,13 @@ fn insert_validator_into_validator_set<S>(
     params: &PosParams,
     address: &Address,
     stake: token::Amount,
-    target_epoch: Epoch,
+    current_epoch: Epoch,
+    offset: u64,
 ) -> storage_api::Result<()>
 where
     S: StorageRead + StorageWrite,
 {
+    let target_epoch = current_epoch + offset;
     let active_set = &active_validator_set_handle().at(&target_epoch);
     let inactive_set = &inactive_validator_set_handle().at(&target_epoch);
     // TODO make epoched
@@ -2303,6 +2308,12 @@ where
             storage,
             &target_epoch,
             address,
+        )?;
+        validator_state_handle(address).init(
+            storage,
+            ValidatorState::Consensus,
+            current_epoch,
+            offset,
         )?;
         write_num_active_validators(storage, num_active_validators + 1)?;
     } else {
@@ -2329,12 +2340,24 @@ where
                 &target_epoch,
                 &removed,
             )?;
+            validator_state_handle(&removed).set(
+                storage,
+                ValidatorState::BelowCapacity,
+                current_epoch,
+                offset,
+            )?;
             // Insert the current genesis validator into the active set
             insert_validator_into_set(
                 &active_set.at(&stake),
                 storage,
                 &target_epoch,
                 address,
+            )?;
+            validator_state_handle(address).init(
+                storage,
+                ValidatorState::Consensus,
+                current_epoch,
+                offset,
             )?;
             // Update and set the validator states
         } else {
@@ -2344,6 +2367,12 @@ where
                 storage,
                 &target_epoch,
                 address,
+            )?;
+            validator_state_handle(address).init(
+                storage,
+                ValidatorState::BelowCapacity,
+                current_epoch,
+                offset,
             )?;
         }
     }
@@ -2965,12 +2994,6 @@ where
         current_epoch,
         params.pipeline_len,
     )?;
-    validator_state_handle(address).init(
-        storage,
-        ValidatorState::Candidate,
-        current_epoch,
-        params.pipeline_len,
-    )?;
     validator_commission_rate_handle(address).init(
         storage,
         commission_rate,
@@ -2985,13 +3008,15 @@ where
     )?;
 
     let stake = token::Amount::default();
-    let pipeline_epoch = current_epoch + params.pipeline_len;
+
+    // TODO: need to set the validator state inside of this function
     insert_validator_into_validator_set(
         storage,
         params,
         address,
         stake,
-        pipeline_epoch,
+        current_epoch,
+        params.pipeline_len,
     )?;
     Ok(())
 }
@@ -3023,7 +3048,7 @@ where
         // println!("\nUNBOND ITER\n");
         let (
             NestedSubKey::Data {
-                key: end_epoch,
+                key: withdraw_epoch,
                 nested_sub_key: SubKey::Data(start_epoch),
             },
             amount,
@@ -3035,7 +3060,7 @@ where
         // 1. cubic slashing
         // 2. adding slash rates in same epoch, applying cumulatively in dif
         // epochs
-        if end_epoch > current_epoch {
+        if withdraw_epoch > current_epoch {
             continue;
         }
         for slash in slashes.iter(storage)? {
@@ -3044,7 +3069,12 @@ where
                 block_height: _,
                 r#type: slash_type,
             } = slash?;
-            if epoch > start_epoch && epoch < end_epoch {
+            if epoch > start_epoch
+                && epoch
+                    < withdraw_epoch
+                        .checked_sub(Epoch(params.unbonding_len))
+                        .unwrap_or_default()
+            {
                 let slash_rate = slash_type.get_slash_rate(&params);
                 let to_slash = token::Amount::from(decimal_mult_u64(
                     slash_rate,
@@ -3054,14 +3084,16 @@ where
             }
         }
         withdrawable_amount += amount;
-        unbonds_to_remove.push((end_epoch, start_epoch));
+        unbonds_to_remove.push((withdraw_epoch, start_epoch));
     }
     withdrawable_amount -= slashed;
 
     // Remove the unbond data from storage
-    for (end_epoch, start_epoch) in unbonds_to_remove {
+    for (withdraw_epoch, start_epoch) in unbonds_to_remove {
         // println!("Remove ({}, {}) from unbond\n", end_epoch, start_epoch);
-        unbond_handle.at(&end_epoch).remove(storage, &start_epoch)?;
+        unbond_handle
+            .at(&withdraw_epoch)
+            .remove(storage, &start_epoch)?;
         // TODO: check if the `end_epoch` layer is now empty and remove it if
         // so, may need to implement remove/delete for nested map
     }
@@ -3245,7 +3277,7 @@ pub fn bond_amount_new<S>(
     params: &PosParams,
     bond_id: &BondId,
     epoch: Epoch,
-) -> storage_api::Result<token::Amount>
+) -> storage_api::Result<(token::Amount, token::Amount)>
 where
     S: StorageRead,
 {
@@ -3254,11 +3286,12 @@ where
     let bonds =
         bond_handle(&bond_id.source, &bond_id.validator).get_data_handler();
     let mut total = token::Amount::default();
+    let mut total_active = token::Amount::default();
     for next in bonds.iter(storage)? {
         let (bond_epoch, delta) = next?;
-        if bond_epoch > epoch {
-            break;
-        }
+        // if bond_epoch > epoch {
+        //     break;
+        // }
         for slash in slashes.iter(storage)? {
             let SlashNew {
                 epoch: slash_epoch,
@@ -3270,10 +3303,14 @@ where
             }
             let current_slashed =
                 decimal_mult_i128(slash_type.get_slash_rate(params), delta);
-            total += token::Amount::from_change(delta - current_slashed);
+            let delta = token::Amount::from_change(delta - current_slashed);
+            total += delta;
+            if bond_epoch <= epoch {
+                total_active += delta;
+            }
         }
     }
-    Ok(total)
+    Ok((total, total_active))
 }
 
 /// NEW: adapting `PosBase::validator_set_update for lazy storage
@@ -3352,8 +3389,13 @@ pub fn validator_set_update_tendermint<S>(
                             cur_stake,
                         )
                     });
-                    if prev_validator_state == Some(ValidatorState::Candidate)
-                        && *prev_tm_voting_power == Some(*cur_tm_voting_power)
+                    if matches!(
+                        prev_validator_state,
+                        Some(
+                            ValidatorState::Consensus
+                                | ValidatorState::BelowCapacity
+                        )
+                    ) && *prev_tm_voting_power == Some(*cur_tm_voting_power)
                     {
                         return None;
                     }
@@ -3435,9 +3477,10 @@ pub fn validator_set_update_tendermint<S>(
                         // TODO: check if it's new validator or previously non-0
                         // stake after `Pending` state is
                         // removed
-                        let state = validator_state_handle(&address)
-                            .get(storage, prev_epoch, params)
-                            .unwrap();
+
+                        // let state = validator_state_handle(&address)
+                        //     .get(storage, prev_epoch, params)
+                        //     .unwrap();
                         if prev_state == Some(ValidatorState::Inactive) {
                             return None;
                         }
@@ -3452,4 +3495,60 @@ pub fn validator_set_update_tendermint<S>(
             Some(ValidatorSetUpdate::Deactivated(consensus_key))
         });
     active_validators.chain(inactive_validators).for_each(f)
+}
+
+/// Find all validators to which a given bond `owner` (or source) has a
+/// delegation
+pub fn find_delegation_validators<S>(
+    storage: &S,
+    owner: &Address,
+) -> storage_api::Result<HashSet<Address>>
+where
+    S: StorageRead + StorageWrite,
+{
+    let bonds_prefix = bonds_for_source_prefix(owner);
+    let mut delegations: HashSet<Address> = HashSet::new();
+
+    for iter_result in storage_api::iter_prefix_bytes(storage, &bonds_prefix)? {
+        let (key, _bond_bytes) = iter_result?;
+        let validator_address = get_validator_address_from_bond(&key)
+            .ok_or_else(|| {
+                storage_api::Error::new_const(
+                    "Delegation key should contain validator address.",
+                )
+            })?;
+        delegations.insert(validator_address);
+    }
+    Ok(delegations)
+}
+
+/// Find all validators to which a given bond `owner` (or source) has a
+/// delegation with the amount
+pub fn find_delegations<S>(
+    storage: &S,
+    owner: &Address,
+    epoch: &Epoch,
+) -> storage_api::Result<HashMap<Address, token::Amount>>
+where
+    S: StorageRead + StorageWrite,
+{
+    let bonds_prefix = bonds_for_source_prefix(owner);
+    let params = read_pos_params(storage)?;
+    let mut delegations: HashMap<Address, token::Amount> = HashMap::new();
+
+    for iter_result in storage_api::iter_prefix_bytes(storage, &bonds_prefix)? {
+        let (key, _bond_bytes) = iter_result?;
+        let validator_address = get_validator_address_from_bond(&key)
+            .ok_or_else(|| {
+                storage_api::Error::new_const(
+                    "Delegation key should contain validator address.",
+                )
+            })?;
+        let amount = bond_handle(owner, &validator_address)
+            .get_sum(storage, epoch.clone(), &params)?
+            .unwrap_or_default();
+        delegations
+            .insert(validator_address, token::Amount::from_change(amount));
+    }
+    Ok(delegations)
 }
