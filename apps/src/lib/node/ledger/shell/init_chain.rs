@@ -189,7 +189,7 @@ where
                 .unwrap();
 
             if let Some(pk) = public_key {
-                let pk_storage_key = pk_key(&address);
+                let pk_storage_key = pk_key(&address, 0);
                 self.storage
                     .write(&pk_storage_key, pk.try_to_vec().unwrap())
                     .unwrap();
@@ -222,7 +222,7 @@ where
         for genesis::ImplicitAccount { public_key } in genesis.implicit_accounts
         {
             let address: address::Address = (&public_key).into();
-            let pk_storage_key = pk_key(&address);
+            let pk_storage_key = pk_key(&address, 0);
             self.storage
                 .write(&pk_storage_key, public_key.try_to_vec().unwrap())
                 .unwrap();
@@ -303,7 +303,7 @@ where
                 .write(&Key::validity_predicate(addr), vp_code)
                 .expect("Unable to write user VP");
             // Validator account key
-            let pk_key = pk_key(addr);
+            let pk_key = pk_key(addr, 0);
             self.storage
                 .write(
                     &pk_key,

@@ -177,7 +177,7 @@ impl TestTxEnv {
         address: &Address,
         public_key: &key::common::PublicKey,
     ) {
-        let storage_key = key::pk_key(address);
+        let storage_key = key::pk_key(address, 0);
         self.storage
             .write(&storage_key, public_key.try_to_vec().unwrap())
             .unwrap();

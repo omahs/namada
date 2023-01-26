@@ -1257,6 +1257,7 @@ pub async fn query_proposal_result(
 
                         let public_key = get_public_key(
                             &proposal.address,
+                            0,
                             args.query.ledger_address.clone(),
                         )
                         .await
@@ -1955,10 +1956,11 @@ pub async fn dry_run_tx(ledger_address: &TendermintAddress, tx_bytes: Vec<u8>) {
 /// Get account's public key stored in its storage sub-space
 pub async fn get_public_key(
     address: &Address,
+    index: u64,
     ledger_address: TendermintAddress,
 ) -> Option<common::PublicKey> {
     let client = HttpClient::new(ledger_address).unwrap();
-    let key = pk_key(address);
+    let key = pk_key(address, index);
     query_storage_value(&client, &key).await
 }
 
@@ -2630,7 +2632,7 @@ pub async fn get_proposal_offline_votes(
         let proposal_vote: OfflineVote = serde_json::from_reader(file)
             .expect("JSON was not well-formatted for offline vote.");
 
-        let key = pk_key(&proposal_vote.address);
+        let key = pk_key(&proposal_vote.address, 0);
         let public_key = query_storage_value(client, &key)
             .await
             .expect("Public key should exist.");
@@ -2885,6 +2887,26 @@ pub async fn get_delegators_delegation(
     address: &Address,
 ) -> HashSet<Address> {
     unwrap_client_response(RPC.vp().pos().delegations(client, address).await)
+}
+
+pub async fn get_address_pks_map(
+    client: &HttpClient,
+    address: &Address
+) -> HashMap<common::PublicKey, u64> {
+    let pk_prefix = pk_prefix_key(address);
+    let pk_iter =
+        query_storage_prefix::<common::PublicKey>(client, &pk_prefix).await;
+    
+    if let Some(pks) = pk_iter {
+        let mut pks_map = HashMap::new();
+        pks.enumerate().map(|(index, (_, pk))| {
+            pks_map.insert(pk, index as u64)
+        });
+
+        pks_map
+    } else {
+        HashMap::new()
+    }
 }
 
 pub async fn get_governance_parameters(client: &HttpClient) -> GovParams {
