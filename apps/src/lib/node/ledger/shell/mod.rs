@@ -554,12 +554,7 @@ where
     /// hash.
     pub fn commit(&mut self) -> response::Commit {
         let mut response = response::Commit::default();
-        // commit changes from the write-log to storage
-        self.wl_storage
-            .write_log
-            .commit_block(&mut self.wl_storage.storage)
-            .expect("Expected committing block write log success");
-        // store the block's data in DB
+        // commit block's data from write log and store the in DB
         self.wl_storage.commit_block().unwrap_or_else(|e| {
             tracing::error!(
                 "Encountered a storage error while committing a block {:?}",

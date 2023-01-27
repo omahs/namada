@@ -24,7 +24,7 @@ pub mod validation;
 mod tests;
 
 use core::fmt::Debug;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::num::TryFromIntError;
 
@@ -38,7 +38,7 @@ use namada_core::ledger::storage_api::collections::lazy_map::{
 use namada_core::ledger::storage_api::collections::LazyCollection;
 use namada_core::ledger::storage_api::token::credit_tokens;
 use namada_core::ledger::storage_api::{
-    self, OptionExt, ResultExt, StorageRead, StorageWrite,
+    self, OptionExt, StorageRead, StorageWrite,
 };
 use namada_core::types::address::{self, Address, InternalAddress};
 use namada_core::types::key::{common, tm_consensus_key_raw_hash};
@@ -49,8 +49,8 @@ use parameters::PosParams;
 use rust_decimal::Decimal;
 use storage::{
     bonds_for_source_prefix, bonds_prefix, get_validator_address_from_bond,
-    into_tm_voting_power, is_bond_key, is_bond_key_new, is_unbond_key_new,
-    mult_amount, mult_change_to_amount, num_active_validators_key, params_key,
+    into_tm_voting_power, is_bond_key_new, is_unbond_key_new, mult_amount,
+    mult_change_to_amount, num_active_validators_key, params_key,
     unbonds_for_source_prefix, unbonds_prefix, validator_address_raw_hash_key,
     validator_max_commission_rate_change_key, BondDetails,
     BondsAndUnbondsDetail, BondsAndUnbondsDetails, ReverseOrdTokenAmount,
@@ -3566,9 +3566,7 @@ pub fn find_validator_slashes<S>(
 where
     S: StorageRead,
 {
-    validator_slashes_handle(&validator)
-        .iter(storage)?
-        .collect()
+    validator_slashes_handle(validator).iter(storage)?.collect()
 }
 
 /// Find bond deltas for the given source and validator address.
@@ -3576,7 +3574,7 @@ pub fn find_bonds<S>(
     storage: &S,
     source: &Address,
     validator: &Address,
-) -> storage_api::Result<HashMap<Epoch, token::Change>>
+) -> storage_api::Result<BTreeMap<Epoch, token::Change>>
 where
     S: StorageRead,
 {
@@ -3591,7 +3589,7 @@ pub fn find_unbonds<S>(
     storage: &S,
     source: &Address,
     validator: &Address,
-) -> storage_api::Result<HashMap<(Epoch, Epoch), token::Amount>>
+) -> storage_api::Result<BTreeMap<(Epoch, Epoch), token::Amount>>
 where
     S: StorageRead,
 {
@@ -3644,8 +3642,8 @@ where
         "Use `find_bonds_and_unbonds_details` when full bond ID is known"
     );
     let mut slashes_cache = HashMap::<Address, Vec<SlashNew>>::new();
-    // TODO map to bond IDs
-    let mut applied_slashes = HashSet::<SlashNew>::new();
+    // Applied slashes grouped by validator address
+    let mut applied_slashes = HashMap::<Address, HashSet<SlashNew>>::new();
 
     // TODO: if validator is `Some`, look-up all its bond owners (including
     // self-bond, if any) first
@@ -3658,7 +3656,6 @@ where
     // gets matched here too
     let mut raw_bonds = storage_api::iter_prefix_bytes(storage, &prefix)?
         .filter_map(|result| {
-            dbg!(&result);
             if let Ok((key, val_bytes)) = result {
                 if let Some((bond_id, start)) = is_bond_key_new(&key) {
                     if source.is_some()
@@ -3684,9 +3681,8 @@ where
     };
     let mut raw_unbonds = storage_api::iter_prefix_bytes(storage, &prefix)?
         .filter_map(|result| {
-            dbg!(&result);
             if let Ok((key, val_bytes)) = result {
-                if let Some((bond_id, start, withdraw)) =
+                if let Some((_bond_id, _start, withdraw)) =
                     is_unbond_key_new(&key)
                 {
                     if let Some((bond_id, start)) = is_bond_key_new(&key) {
@@ -3720,10 +3716,12 @@ where
         let slashes = slashes_cache
             .get(&bond_id.validator)
             .expect("We must have inserted it if it's not cached already");
+        let validator = bond_id.validator.clone();
         let (bonds, _unbonds) = bonds_and_unbonds.entry(bond_id).or_default();
         bonds.push(make_bond_details(
             storage,
-            &params,
+            params,
+            &validator,
             change,
             start,
             slashes,
@@ -3740,10 +3738,12 @@ where
         let slashes = slashes_cache
             .get(&bond_id.validator)
             .expect("We must have inserted it if it's not cached already");
+        let validator = bond_id.validator.clone();
         let (_bonds, unbonds) = bonds_and_unbonds.entry(bond_id).or_default();
         unbonds.push(make_unbond_details(
             storage,
-            &params,
+            params,
+            &validator,
             amount,
             (start, withdraw),
             slashes,
@@ -3758,7 +3758,10 @@ where
             let details = BondsAndUnbondsDetail {
                 bonds,
                 unbonds,
-                slashes: applied_slashes.iter().cloned().collect(),
+                slashes: applied_slashes
+                    .get(&bond_id.validator)
+                    .cloned()
+                    .unwrap_or_default(),
             };
             (bond_id, details)
         })
@@ -3775,14 +3778,15 @@ where
     S: StorageRead,
 {
     let slashes = find_validator_slashes(storage, &validator)?;
-    let mut applied_slashes = HashSet::<SlashNew>::new();
+    let mut applied_slashes = HashMap::<Address, HashSet<SlashNew>>::new();
 
     let bonds = find_bonds(storage, &source, &validator)?
         .into_iter()
         .map(|(start, change)| {
             make_bond_details(
                 storage,
-                &params,
+                params,
+                &validator,
                 change,
                 start,
                 &slashes,
@@ -3796,7 +3800,8 @@ where
         .map(|(epoch_range, change)| {
             make_unbond_details(
                 storage,
-                &params,
+                params,
+                &validator,
                 change,
                 epoch_range,
                 &slashes,
@@ -3808,19 +3813,20 @@ where
     let details = BondsAndUnbondsDetail {
         bonds,
         unbonds,
-        slashes: applied_slashes.into_iter().collect(),
+        slashes: applied_slashes.get(&validator).cloned().unwrap_or_default(),
     };
     let bond_id = BondId { source, validator };
     Ok(HashMap::from_iter([(bond_id, details)]))
 }
 
 fn make_bond_details<S>(
-    storage: &S,
+    _storage: &S,
     params: &PosParams,
+    validator: &Address,
     change: token::Change,
     start: Epoch,
     slashes: &Vec<SlashNew>,
-    applied_slashes: &mut HashSet<SlashNew>,
+    applied_slashes: &mut HashMap<Address, HashSet<SlashNew>>,
 ) -> BondDetails {
     let amount = token::Amount::from_change(change);
     let slashed_amount =
@@ -3828,13 +3834,15 @@ fn make_bond_details<S>(
             .iter()
             .fold(None, |acc: Option<token::Amount>, slash| {
                 if slash.epoch >= start {
-                    if !applied_slashes.contains(slash) {
-                        applied_slashes.insert(slash.clone());
+                    let validator_slashes =
+                        applied_slashes.entry(validator.clone()).or_default();
+                    if !validator_slashes.contains(slash) {
+                        validator_slashes.insert(slash.clone());
                     }
                     return Some(
                         acc.unwrap_or_default()
                             + mult_change_to_amount(
-                                slash.r#type.get_slash_rate(&params),
+                                slash.r#type.get_slash_rate(params),
                                 change,
                             ),
                     );
@@ -3849,12 +3857,13 @@ fn make_bond_details<S>(
 }
 
 fn make_unbond_details<S>(
-    storage: &S,
+    _storage: &S,
     params: &PosParams,
+    validator: &Address,
     amount: token::Amount,
     (start, withdraw): (Epoch, Epoch),
     slashes: &Vec<SlashNew>,
-    applied_slashes: &mut HashSet<SlashNew>,
+    applied_slashes: &mut HashMap<Address, HashSet<SlashNew>>,
 ) -> UnbondDetails {
     let slashed_amount =
         slashes
@@ -3866,13 +3875,15 @@ fn make_unbond_details<S>(
                             .checked_sub(Epoch(params.unbonding_len))
                             .unwrap_or_default()
                 {
-                    if !applied_slashes.contains(slash) {
-                        applied_slashes.insert(slash.clone());
+                    let validator_slashes =
+                        applied_slashes.entry(validator.clone()).or_default();
+                    if !validator_slashes.contains(slash) {
+                        validator_slashes.insert(slash.clone());
                     }
                     return Some(
                         acc.unwrap_or_default()
                             + mult_amount(
-                                slash.r#type.get_slash_rate(&params),
+                                slash.r#type.get_slash_rate(params),
                                 amount,
                             ),
                     );

@@ -3,7 +3,7 @@
 mod rev_order;
 
 use core::fmt::Debug;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::TryFrom;
 use std::fmt::Display;
 use std::hash::Hash;
@@ -583,12 +583,14 @@ pub struct BondsAndUnbondsDetail {
     pub bonds: Vec<BondDetails>,
     /// Unbonds
     pub unbonds: Vec<UnbondDetails>,
-    /// Slashes
-    pub slashes: Vec<SlashNew>,
+    /// Slashes applied to any of the bonds and/or unbonds
+    pub slashes: HashSet<SlashNew>,
 }
 
 /// Bond with all its details
-#[derive(Debug, Clone, BorshDeserialize, BorshSerialize, BorshSchema)]
+#[derive(
+    Debug, Clone, BorshDeserialize, BorshSerialize, BorshSchema, PartialEq,
+)]
 pub struct BondDetails {
     /// The first epoch in which this bond contributed to a stake
     pub start: Epoch,

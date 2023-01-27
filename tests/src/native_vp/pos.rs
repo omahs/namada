@@ -137,7 +137,7 @@ pub fn init_pos(
         .unwrap();
 
         // Commit changes in WL to genesis state
-        tx_env.commit_genesis();
+        tx_env.commit_protocol_changes();
     });
 }
 

@@ -389,7 +389,7 @@ mod tests {
         itertools::assert_equal(iter, expected.clone());
 
         // Commit genesis state
-        storage.commit_genesis().unwrap();
+        storage.commit_protocol_changes().unwrap();
 
         // Again, try to iterate over their prefix
         let iter = storage_api::iter_prefix(&storage, &prefix)
@@ -440,7 +440,7 @@ mod tests {
         itertools::assert_equal(iter, expected.clone());
 
         // Commit genesis state
-        storage.commit_genesis().unwrap();
+        storage.commit_protocol_changes().unwrap();
 
         // And check again
         let iter = storage_api::iter_prefix(&storage, &prefix)

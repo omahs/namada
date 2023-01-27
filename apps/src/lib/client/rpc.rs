@@ -31,11 +31,10 @@ use namada::ledger::native_vp::governance::utils::Votes;
 use namada::ledger::parameters::{storage as param_storage, EpochDuration};
 use namada::ledger::pos::types::decimal_mult_u64;
 use namada::ledger::pos::{
-    self, is_validator_slashes_key, BondId, Bonds, PosParams, Slash, Unbonds,
+    self, is_validator_slashes_key, BondId, Bonds, PosParams, Slash,
 };
 use namada::ledger::queries::{self, RPC};
 use namada::ledger::storage::ConversionState;
-use namada::proof_of_stake::types::{BondsAndUnbondsDetail, SlashNew};
 use namada::proto::{SignedTxData, Tx};
 use namada::types::address::{masp, tokens, Address};
 use namada::types::governance::{
@@ -1398,8 +1397,8 @@ pub async fn query_withdrawable_tokens(
 }
 
 /// Query PoS bond(s)
-pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
-    let epoch = query_epoch(args.query.clone()).await;
+pub async fn query_bonds(_ctx: Context, args: args::QueryBonds) {
+    let _epoch = query_epoch(args.query.clone()).await;
     let client = HttpClient::new(args.query.ledger_address).unwrap();
 
     let stdout = io::stdout();
@@ -1450,9 +1449,6 @@ pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
         writeln!(w, "Bonds total: {}", total).unwrap();
         bonds_total += total;
         bonds_total_slashed += total_slashed;
-
-        let mut total: token::Amount = 0.into();
-        let mut total_slashed: token::Amount = 0.into();
 
         let mut withdrawable = token::Amount::default();
         if !details.unbonds.is_empty() {

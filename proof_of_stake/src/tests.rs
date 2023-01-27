@@ -27,13 +27,13 @@ use test_log::test;
 use crate::parameters::testing::arb_pos_params;
 use crate::parameters::PosParams;
 use crate::types::{
-    GenesisValidator, Position, ReverseOrdTokenAmount, ValidatorState,
-    WeightedValidatorNew,
+    BondDetails, BondId, BondsAndUnbondsDetails, GenesisValidator, Position,
+    ReverseOrdTokenAmount, ValidatorState, WeightedValidatorNew,
 };
 use crate::{
     active_validator_set_handle, become_validator_new, bond_handle,
     bond_tokens_new, bonds_and_unbonds, copy_validator_sets_and_positions,
-    find_validator_by_raw_hash, inactive_validator_set_handle,
+    find_unbonds, find_validator_by_raw_hash, inactive_validator_set_handle,
     init_genesis_new, insert_validator_into_validator_set,
     read_active_validator_set_addresses_with_stake,
     read_inactive_validator_set_addresses_with_stake,
@@ -120,8 +120,8 @@ fn test_init_genesis_aux(
     )
     .unwrap();
 
-    let bonds_and_unbonds = bonds_and_unbonds(&s, None, None).unwrap();
-    assert!(bonds_and_unbonds.iter().all(|(_id, details)| {
+    let mut bond_details = bonds_and_unbonds(&s, None, None).unwrap();
+    assert!(bond_details.iter().all(|(_id, details)| {
         details.unbonds.is_empty() && details.slashes.is_empty()
     }));
 
@@ -129,7 +129,22 @@ fn test_init_genesis_aux(
     for (i, validator) in validators.into_iter().rev().enumerate() {
         println!("Validator {validator:?}");
 
-        // TODO check self-bonds in `bonds_and_unbonds`
+        let addr = &validator.address;
+        let self_bonds = bond_details
+            .remove(&BondId {
+                source: addr.clone(),
+                validator: addr.clone(),
+            })
+            .unwrap();
+        assert_eq!(self_bonds.bonds.len(), 1);
+        assert_eq!(
+            self_bonds.bonds[0],
+            BondDetails {
+                start: start_epoch,
+                amount: validator.tokens,
+                slashed_amount: None,
+            }
+        );
 
         let state = validator_state_handle(&validator.address)
             .get(&s, start_epoch, &params)
@@ -170,6 +185,7 @@ fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
     let mut s = TestWlStorage::default();
 
     // Genesis
+    let start_epoch = s.storage.block.epoch;
     let mut current_epoch = s.storage.block.epoch;
     init_genesis_new(
         &mut s,
@@ -178,7 +194,7 @@ fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
         current_epoch,
     )
     .unwrap();
-    s.commit_genesis().unwrap();
+    s.commit_protocol_changes().unwrap();
 
     // Advance to epoch 1
     current_epoch = advance_epoch(&mut s, &params);
@@ -199,18 +215,29 @@ fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
         read_total_stake(&s, &params, pipeline_epoch).unwrap();
 
     // Self-bond
-    let amount = token::Amount::from(100_500_000);
-    credit_tokens(&mut s, &staking_token_address(), &validator.address, amount)
-        .unwrap();
-    bond_tokens_new(&mut s, None, &validator.address, amount, current_epoch)
-        .unwrap();
+    let amount_self_bond = token::Amount::from(100_500_000);
+    credit_tokens(
+        &mut s,
+        &staking_token_address(),
+        &validator.address,
+        amount_self_bond,
+    )
+    .unwrap();
+    bond_tokens_new(
+        &mut s,
+        None,
+        &validator.address,
+        amount_self_bond,
+        current_epoch,
+    )
+    .unwrap();
 
     // Check the bond delta
     let self_bond = bond_handle(&validator.address, &validator.address);
     let delta = self_bond
         .get_delta_val(&s, pipeline_epoch, &params)
         .unwrap();
-    assert_eq!(delta, Some(amount.change()));
+    assert_eq!(delta, Some(amount_self_bond.change()));
 
     // Check the validator in the validator set
     let set =
@@ -222,7 +249,7 @@ fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
              address,
          }| {
             address == validator.address
-                && bonded_stake == validator.tokens + amount
+                && bonded_stake == validator.tokens + amount_self_bond
         }
     ));
 
@@ -233,7 +260,7 @@ fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
         pipeline_epoch,
     )
     .unwrap();
-    assert_eq!(val_deltas, Some(amount.change()));
+    assert_eq!(val_deltas, Some(amount_self_bond.change()));
 
     let total_deltas_handle = total_deltas_handle();
     assert_eq!(
@@ -242,7 +269,59 @@ fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
     );
     let total_stake_after =
         read_total_stake(&s, &params, pipeline_epoch).unwrap();
-    assert_eq!(total_stake_before + amount, total_stake_after);
+    assert_eq!(total_stake_before + amount_self_bond, total_stake_after);
+
+    // Check bond details after self-bond
+    let self_bond_id = BondId {
+        source: validator.address.clone(),
+        validator: validator.address.clone(),
+    };
+    let check_bond_details = |ix, bond_details: BondsAndUnbondsDetails| {
+        println!("Check index {ix}");
+        assert_eq!(bond_details.len(), 1);
+        let details = bond_details.get(&self_bond_id).unwrap();
+        assert_eq!(
+            details.bonds.len(),
+            2,
+            "Contains genesis and newly added self-bond"
+        );
+        dbg!(&details.bonds);
+        assert_eq!(
+            details.bonds[0],
+            BondDetails {
+                start: start_epoch,
+                amount: validator.tokens,
+                slashed_amount: None
+            },
+        );
+        assert_eq!(
+            details.bonds[1],
+            BondDetails {
+                start: pipeline_epoch,
+                amount: amount_self_bond,
+                slashed_amount: None
+            },
+        );
+    };
+    // Try to call it with different combinations of owner/validator args
+    check_bond_details(0, bonds_and_unbonds(&s, None, None).unwrap());
+    check_bond_details(
+        1,
+        bonds_and_unbonds(&s, Some(validator.address.clone()), None).unwrap(),
+    );
+    check_bond_details(
+        2,
+        bonds_and_unbonds(&s, None, Some(validator.address.clone())).unwrap(),
+    );
+    check_bond_details(
+        3,
+        bonds_and_unbonds(
+            &s,
+            Some(validator.address.clone()),
+            Some(validator.address.clone()),
+        )
+        .unwrap(),
+    );
 
     // Get a non-validating account with tokens
     let delegator = address::testing::gen_implicit_address();
@@ -259,9 +338,10 @@ fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
     // Advance to epoch 3
     advance_epoch(&mut s, &params);
     current_epoch = advance_epoch(&mut s, &params);
-    let delegation_epoch = current_epoch;
+    let pipeline_epoch = current_epoch + params.pipeline_len;
 
     // Delegation
+    let delegation_epoch = current_epoch;
     bond_tokens_new(
         &mut s,
         Some(&delegator),
@@ -274,41 +354,111 @@ fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
         &s,
         &params,
         &validator.address,
-        current_epoch + params.pipeline_len - 1,
+        pipeline_epoch - 1,
     )
     .unwrap()
     .unwrap_or_default();
-    let val_stake_post = read_validator_stake(
-        &s,
-        &params,
-        &validator.address,
-        current_epoch + params.pipeline_len,
-    )
-    .unwrap()
-    .unwrap_or_default();
-    assert_eq!(validator.tokens + amount, val_stake_pre);
-    assert_eq!(validator.tokens + amount + amount_del, val_stake_post);
+    let val_stake_post =
+        read_validator_stake(&s, &params, &validator.address, pipeline_epoch)
+            .unwrap()
+            .unwrap_or_default();
+    assert_eq!(validator.tokens + amount_self_bond, val_stake_pre);
+    assert_eq!(
+        validator.tokens + amount_self_bond + amount_del,
+        val_stake_post
+    );
     let delegation = bond_handle(&delegator, &validator.address);
     assert_eq!(
         delegation
-            .get_sum(&s, current_epoch + params.pipeline_len - 1, &params)
+            .get_sum(&s, pipeline_epoch - 1, &params)
             .unwrap()
             .unwrap_or_default(),
         token::Change::default()
     );
     assert_eq!(
         delegation
-            .get_sum(&s, current_epoch + params.pipeline_len, &params)
+            .get_sum(&s, pipeline_epoch, &params)
             .unwrap()
             .unwrap_or_default(),
         amount_del.change()
+    );
+
+    // Check delegation bonds details after delegation
+    let delegation_bond_id = BondId {
+        source: delegator.clone(),
+        validator: validator.address.clone(),
+    };
+    let check_bond_details = |ix, bond_details: BondsAndUnbondsDetails| {
+        println!("Check index {ix}");
+        assert_eq!(bond_details.len(), 1);
+        let details = bond_details.get(&delegation_bond_id).unwrap();
+        assert_eq!(details.bonds.len(), 1,);
+        dbg!(&details.bonds);
+        assert_eq!(
+            details.bonds[0],
+            BondDetails {
+                start: pipeline_epoch,
+                amount: amount_del,
+                slashed_amount: None
+            },
+        );
+    };
+    // Try to call it with different combinations of owner/validator args
+    check_bond_details(
+        0,
+        bonds_and_unbonds(&s, Some(delegator.clone()), None).unwrap(),
+    );
+    check_bond_details(
+        1,
+        bonds_and_unbonds(
+            &s,
+            Some(delegator.clone()),
+            Some(validator.address.clone()),
+        )
+        .unwrap(),
+    );
+
+    // Check all bond details (self-bonds and delegation)
+    let check_bond_details = |ix, bond_details: BondsAndUnbondsDetails| {
+        println!("Check index {ix}");
+        assert_eq!(bond_details.len(), 2);
+        let self_bond_details = bond_details.get(&self_bond_id).unwrap();
+        let delegation_details = bond_details.get(&delegation_bond_id).unwrap();
+        assert_eq!(
+            self_bond_details.bonds.len(),
+            2,
+            "Contains genesis and newly added self-bond"
+        );
+        assert_eq!(
+            self_bond_details.bonds[0],
+            BondDetails {
+                start: start_epoch,
+                amount: validator.tokens,
+                slashed_amount: None
+            },
+        );
+        assert_eq!(self_bond_details.bonds[1].amount, amount_self_bond);
+        assert_eq!(
+            delegation_details.bonds[0],
+            BondDetails {
+                start: pipeline_epoch,
+                amount: amount_del,
+                slashed_amount: None
+            },
+        );
+    };
+    // Try to call it with different combinations of owner/validator args
+    check_bond_details(0, bonds_and_unbonds(&s, None, None).unwrap());
+    check_bond_details(
+        1,
+        bonds_and_unbonds(&s, None, Some(validator.address.clone())).unwrap(),
     );
 
     // Advance to epoch 5
     for _ in 0..2 {
         current_epoch = advance_epoch(&mut s, &params);
     }
-    let unbond_epoch = current_epoch;
+    let pipeline_epoch = current_epoch + params.pipeline_len;
 
     // Unbond the self-bond
     unbond_tokens_new(
@@ -324,21 +474,17 @@ fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
         &s,
         &params,
         &validator.address,
-        current_epoch + params.pipeline_len - 1,
+        pipeline_epoch - 1,
     )
     .unwrap();
-    let val_stake_post = read_validator_stake(
-        &s,
-        &params,
-        &validator.address,
-        current_epoch + params.pipeline_len,
-    )
-    .unwrap();
+    let val_stake_post =
+        read_validator_stake(&s, &params, &validator.address, pipeline_epoch)
+            .unwrap();
     let val_delta = read_validator_delta_value(
         &s,
         &params,
         &validator.address,
-        current_epoch + params.pipeline_len,
+        pipeline_epoch,
     )
     .unwrap();
     let unbond = unbond_handle(&validator.address, &validator.address);
@@ -346,27 +492,30 @@ fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
     assert_eq!(val_delta, Some(-amount_del.change()));
     assert_eq!(
         unbond
-            .at(&(unbond_epoch + params.pipeline_len + params.unbonding_len))
+            .at(&(pipeline_epoch + params.unbonding_len))
             .get(&s, &(self_bond_epoch + params.pipeline_len))
             .unwrap(),
-        Some(amount)
+        Some(amount_self_bond)
     );
     assert_eq!(
         unbond
-            .at(&(unbond_epoch + params.pipeline_len + params.unbonding_len))
+            .at(&(pipeline_epoch + params.unbonding_len))
             .get(&s, &Epoch::default())
             .unwrap(),
-        Some(amount_del - amount)
+        Some(amount_del - amount_self_bond)
     );
-    assert_eq!(val_stake_pre, Some(validator.tokens + amount + amount_del));
-    assert_eq!(val_stake_post, Some(validator.tokens + amount));
+    assert_eq!(
+        val_stake_pre,
+        Some(validator.tokens + amount_self_bond + amount_del)
+    );
+    assert_eq!(val_stake_post, Some(validator.tokens + amount_self_bond));
 
     // Unbond delegation
     unbond_tokens_new(
         &mut s,
         Some(&delegator),
         &validator.address,
-        amount,
+        amount_self_bond,
         current_epoch,
     )
     .unwrap();
@@ -375,34 +524,33 @@ fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
         &s,
         &params,
         &validator.address,
-        current_epoch + params.pipeline_len - 1,
+        pipeline_epoch - 1,
     )
     .unwrap();
-    let val_stake_post = read_validator_stake(
-        &s,
-        &params,
-        &validator.address,
-        current_epoch + params.pipeline_len,
-    )
-    .unwrap();
+    let val_stake_post =
+        read_validator_stake(&s, &params, &validator.address, pipeline_epoch)
+            .unwrap();
     let val_delta = read_validator_delta_value(
         &s,
         &params,
         &validator.address,
-        current_epoch + params.pipeline_len,
+        pipeline_epoch,
     )
     .unwrap();
     let unbond = unbond_handle(&delegator, &validator.address);
 
-    assert_eq!(val_delta, Some(-(amount + amount_del).change()));
+    assert_eq!(val_delta, Some(-(amount_self_bond + amount_del).change()));
     assert_eq!(
         unbond
-            .at(&(unbond_epoch + params.pipeline_len + params.unbonding_len))
+            .at(&(pipeline_epoch + params.unbonding_len))
             .get(&s, &(delegation_epoch + params.pipeline_len))
             .unwrap(),
-        Some(amount)
+        Some(amount_self_bond)
     );
-    assert_eq!(val_stake_pre, Some(validator.tokens + amount + amount_del));
+    assert_eq!(
+        val_stake_pre,
+        Some(validator.tokens + amount_self_bond + amount_del)
+    );
     assert_eq!(val_stake_post, Some(validator.tokens));
 
     let withdrawable_offset = params.unbonding_len + params.pipeline_len;
@@ -411,6 +559,7 @@ fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
     for _ in 0..withdrawable_offset {
         current_epoch = advance_epoch(&mut s, &params);
     }
+
     dbg!(current_epoch);
 
     let pos_balance = s
@@ -420,7 +569,10 @@ fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
         ))
         .unwrap();
 
-    assert_eq!(Some(pos_balance_pre + amount + amount_del), pos_balance);
+    assert_eq!(
+        Some(pos_balance_pre + amount_self_bond + amount_del),
+        pos_balance
+    );
 
     // Withdraw the self-unbond
     withdraw_tokens_new(&mut s, None, &validator.address, current_epoch)
@@ -435,7 +587,7 @@ fn test_bonds_aux(params: PosParams, validators: Vec<GenesisValidator>) {
             &super::ADDRESS,
         ))
         .unwrap();
-    assert_eq!(Some(pos_balance_pre + amount), pos_balance);
+    assert_eq!(Some(pos_balance_pre + amount_self_bond), pos_balance);
 
     // Withdraw the delegation unbond
     withdraw_tokens_new(
@@ -481,7 +633,7 @@ fn test_become_validator_aux(
         current_epoch,
     )
     .unwrap();
-    s.commit_genesis().unwrap();
+    s.commit_protocol_changes().unwrap();
 
     // Advance to epoch 1
     current_epoch = advance_epoch(&mut s, &params);

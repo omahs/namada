@@ -528,7 +528,7 @@ mod test_with_tx_and_vp_env {
             difficulty,
             withdrawal_limit,
         )?;
-        tx_env.commit_genesis();
+        tx_env.commit_protocol_changes();
 
         let challenge = Challenge::new(
             &mut tx_env.wl_storage,

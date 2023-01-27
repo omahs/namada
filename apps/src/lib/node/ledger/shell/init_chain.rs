@@ -363,7 +363,7 @@ where
         }
 
         self.wl_storage
-            .commit_genesis()
+            .commit_protocol_changes()
             .expect("Must be able to commit genesis state");
 
         Ok(response)

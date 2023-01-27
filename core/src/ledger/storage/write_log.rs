@@ -339,7 +339,7 @@ impl WriteLog {
     }
 
     /// Commit the current genesis tx's write log to the storage.
-    pub fn commit_genesis<DB, H>(
+    pub fn commit_protocol_changes<DB, H>(
         &mut self,
         storage: &mut Storage<DB, H>,
     ) -> Result<()>

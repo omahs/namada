@@ -15,7 +15,7 @@ use namada_proof_of_stake::{
 
 use crate::ledger::queries::types::RequestCtx;
 use crate::ledger::storage::{DBIter, StorageHasher, DB};
-use crate::ledger::{pos, storage_api};
+use crate::ledger::storage_api;
 use crate::types::address::Address;
 use crate::types::storage::Epoch;
 use crate::types::token;
@@ -267,8 +267,6 @@ where
     D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
     H: 'static + StorageHasher + Sync,
 {
-    let params = read_pos_params(ctx.wl_storage)?;
-
     let handle = unbond_handle(&source, &validator);
     let unbonds = handle
         .iter(ctx.wl_storage)?
@@ -296,8 +294,6 @@ where
     D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
     H: 'static + StorageHasher + Sync,
 {
-    let params = read_pos_params(ctx.wl_storage)?;
-
     // TODO slashes
     let handle = unbond_handle(&source, &validator);
     let unbonds = handle

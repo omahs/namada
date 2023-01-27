@@ -347,6 +347,8 @@ where
 
         if new_epoch {
             self.update_epoch(&mut response);
+            // Commit the changes applied via WlStorage into the WriteLog
+            self.wl_storage.commit_protocol_changes();
         }
 
         let _ = self

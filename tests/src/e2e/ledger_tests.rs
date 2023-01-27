@@ -222,6 +222,9 @@ fn run_ledger_load_state_and_reset() -> Result<()> {
     ledger.exp_string("No state could be found")?;
     // Wait to commit a block
     ledger.exp_regex(r"Committed block hash.*, height: [0-9]+")?;
+    // Wait for a new epoch
+    let validator_one_rpc = get_actor_rpc(&test, &Who::Validator(0));
+    epoch_sleep(&test, &validator_one_rpc, 30)?;
 
     // 2. Shut it down
     ledger.send_control('c')?;

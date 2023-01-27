@@ -33,11 +33,10 @@ where
         Self { write_log, storage }
     }
 
-    /// Commit the genesis state to DB. This should only be used before any
-    /// blocks are produced.
-    pub fn commit_genesis(&mut self) -> storage_api::Result<()> {
+    /// Commit the genesis state or block protocol changes to DB.
+    pub fn commit_protocol_changes(&mut self) -> storage_api::Result<()> {
         self.write_log
-            .commit_genesis(&mut self.storage)
+            .commit_protocol_changes(&mut self.storage)
             .into_storage_result()
     }
 
