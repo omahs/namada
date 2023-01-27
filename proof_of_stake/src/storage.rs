@@ -307,8 +307,7 @@ pub fn is_bond_key(key: &Key) -> Option<BondId> {
     }
 }
 
-/// Is storage key for a bond? Returns the bond ID and bond start epoch if it
-/// is.
+/// Is storage key for a bond? Returns the bond ID and bond start epoch if so.
 pub fn is_bond_key_new(key: &Key) -> Option<(BondId, Epoch)> {
     if key.segments.len() > 6 {
         match &key.segments[..6] {
