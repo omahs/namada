@@ -910,11 +910,7 @@ pub mod testing {
                         },
                         PosStorageChange::ValidatorState {
                             validator: address.clone(),
-                            state: ValidatorState::Pending,
-                        },
-                        PosStorageChange::ValidatorState {
-                            validator: address.clone(),
-                            state: ValidatorState::Candidate,
+                            state: ValidatorState::Consensus,
                         },
                         PosStorageChange::ValidatorDeltas {
                             validator: address.clone(),

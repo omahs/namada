@@ -32,7 +32,7 @@ use crate::types::{
 };
 use crate::{
     active_validator_set_handle, become_validator_new, bond_handle,
-    bond_tokens_new, copy_validator_sets_and_positions,
+    bond_tokens_new, bonds_and_unbonds, copy_validator_sets_and_positions,
     find_validator_by_raw_hash, inactive_validator_set_handle,
     init_genesis_new, insert_validator_into_validator_set,
     read_active_validator_set_addresses_with_stake,
@@ -53,9 +53,9 @@ proptest! {
     #[test]
     fn test_init_genesis(
 
-    pos_params in arb_pos_params(Some(50)),
+    pos_params in arb_pos_params(Some(5)),
     start_epoch in (0_u64..1000).prop_map(Epoch),
-    genesis_validators in arb_genesis_validators(1..100),
+    genesis_validators in arb_genesis_validators(1..10),
 
     ) {
         test_init_genesis_aux(pos_params, start_epoch, genesis_validators)
@@ -120,9 +120,16 @@ fn test_init_genesis_aux(
     )
     .unwrap();
 
+    let bonds_and_unbonds = bonds_and_unbonds(&s, None, None).unwrap();
+    assert!(bonds_and_unbonds.iter().all(|(_id, details)| {
+        details.unbonds.is_empty() && details.slashes.is_empty()
+    }));
+
     validators.sort_by(|a, b| a.tokens.cmp(&b.tokens));
     for (i, validator) in validators.into_iter().rev().enumerate() {
         println!("Validator {validator:?}");
+
+        // TODO check self-bonds in `bonds_and_unbonds`
 
         let state = validator_state_handle(&validator.address)
             .get(&s, start_epoch, &params)

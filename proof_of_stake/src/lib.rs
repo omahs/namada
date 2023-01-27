@@ -51,7 +51,7 @@ use storage::{
     bonds_for_source_prefix, bonds_prefix, get_validator_address_from_bond,
     into_tm_voting_power, is_bond_key, is_bond_key_new, is_unbond_key_new,
     mult_amount, mult_change_to_amount, num_active_validators_key, params_key,
-    unbonds_prefix, validator_address_raw_hash_key,
+    unbonds_for_source_prefix, unbonds_prefix, validator_address_raw_hash_key,
     validator_max_commission_rate_change_key, BondDetails,
     BondsAndUnbondsDetail, BondsAndUnbondsDetails, ReverseOrdTokenAmount,
     UnbondDetails, WeightedValidatorNew,
@@ -3639,40 +3639,27 @@ fn get_multiple_bonds_and_unbonds<S>(
 where
     S: StorageRead,
 {
+    debug_assert!(
+        source.is_none() || validator.is_none(),
+        "Use `find_bonds_and_unbonds_details` when full bond ID is known"
+    );
     let mut slashes_cache = HashMap::<Address, Vec<SlashNew>>::new();
+    // TODO map to bond IDs
     let mut applied_slashes = HashSet::<SlashNew>::new();
 
-    let mut raw_bonds = storage_api::iter_prefix_bytes(
-        storage,
-        &bonds_prefix(),
-    )?
-    .filter_map(|result| {
-        if let Ok((key, val_bytes)) = result {
-            if let Some((bond_id, start)) = is_bond_key_new(&key) {
-                if source.is_some()
-                    && source.as_ref().unwrap() != &bond_id.source
-                {
-                    return None;
-                } else if validator.is_some()
-                    && validator.as_ref().unwrap() != &bond_id.validator
-                {
-                    return None;
-                }
-                let change: token::Change =
-                    BorshDeserialize::try_from_slice(&val_bytes).ok()?;
-                return Some((bond_id, start, change));
-            }
-        }
-        None
-    });
+    // TODO: if validator is `Some`, look-up all its bond owners (including
+    // self-bond, if any) first
 
-    let mut raw_unbonds = storage_api::iter_prefix_bytes(
-        storage,
-        &unbonds_prefix(),
-    )?
-    .filter_map(|result| {
-        if let Ok((key, val_bytes)) = result {
-            if let Some((bond_id, start, withdraw)) = is_unbond_key_new(&key) {
+    let prefix = match source.as_ref() {
+        Some(source) => bonds_for_source_prefix(source),
+        None => bonds_prefix(),
+    };
+    // We have to iterate raw bytes, cause the epoched data `last_update` field
+    // gets matched here too
+    let mut raw_bonds = storage_api::iter_prefix_bytes(storage, &prefix)?
+        .filter_map(|result| {
+            dbg!(&result);
+            if let Ok((key, val_bytes)) = result {
                 if let Some((bond_id, start)) = is_bond_key_new(&key) {
                     if source.is_some()
                         && source.as_ref().unwrap() != &bond_id.source
@@ -3683,14 +3670,44 @@ where
                     {
                         return None;
                     }
-                    let amount: token::Amount =
+                    let change: token::Change =
                         BorshDeserialize::try_from_slice(&val_bytes).ok()?;
-                    return Some((bond_id, start, withdraw, amount));
+                    return Some((bond_id, start, change));
                 }
             }
-        }
-        None
-    });
+            None
+        });
+
+    let prefix = match source.as_ref() {
+        Some(source) => unbonds_for_source_prefix(source),
+        None => unbonds_prefix(),
+    };
+    let mut raw_unbonds = storage_api::iter_prefix_bytes(storage, &prefix)?
+        .filter_map(|result| {
+            dbg!(&result);
+            if let Ok((key, val_bytes)) = result {
+                if let Some((bond_id, start, withdraw)) =
+                    is_unbond_key_new(&key)
+                {
+                    if let Some((bond_id, start)) = is_bond_key_new(&key) {
+                        if source.is_some()
+                            && source.as_ref().unwrap() != &bond_id.source
+                        {
+                            return None;
+                        } else if validator.is_some()
+                            && validator.as_ref().unwrap() != &bond_id.validator
+                        {
+                            return None;
+                        }
+                        let amount: token::Amount =
+                            BorshDeserialize::try_from_slice(&val_bytes)
+                                .ok()?;
+                        return Some((bond_id, start, withdraw, amount));
+                    }
+                }
+            }
+            None
+        });
 
     let mut bonds_and_unbonds =
         HashMap::<BondId, (Vec<BondDetails>, Vec<UnbondDetails>)>::new();

@@ -1,6 +1,5 @@
 //! Client RPC queries
 
-use core::slice::SlicePattern;
 use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -1398,680 +1397,109 @@ pub async fn query_withdrawable_tokens(
     )
 }
 
-pub async fn query_bonds_new(ctx: Context, args: args::QueryBonds) {
+/// Query PoS bond(s)
+pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
     let epoch = query_epoch(args.query.clone()).await;
     let client = HttpClient::new(args.query.ledger_address).unwrap();
 
     let stdout = io::stdout();
     let mut w = stdout.lock();
 
-    match (args.owner, args.validator) {
-        // All bonds and unbonds
-        (None, None) => {
-            let bonds_and_unbonds: pos::types::BondsAndUnbondsDetails =
-                unwrap_client_response(
-                    RPC.vp()
-                        .pos()
-                        .bonds_and_unbonds(&client, &None, &None)
-                        .await,
-                );
-            let mut bonds_total: token::Amount = 0.into();
-            let mut bonds_total_slashed: token::Amount = 0.into();
-            let mut unbonds_total: token::Amount = 0.into();
-            let mut unbonds_total_slashed: token::Amount = 0.into();
-            let mut total_withdrawable: token::Amount = 0.into();
-            for (bond_id, details) in bonds_and_unbonds {
-                let mut total: token::Amount = 0.into();
-                let mut total_slashed: token::Amount = 0.into();
-                let bond_type: Cow<str> = if bond_id.source == bond_id.validator
-                {
-                    "Self-bonds".into()
-                } else {
-                    format!(
-                        "Delegations from {} to {}",
-                        bond_id.source, bond_id.validator
-                    )
-                    .into()
-                };
-                writeln!(w, "{}:", bond_type).unwrap();
-                for bond in details.bonds {
-                    writeln!(
-                        w,
-                        "  Remaining active bond from epoch {}: Δ {}",
-                        bond.start, bond.amount
-                    )
-                    .unwrap();
-                    total += bond.amount;
-                    total_slashed += bond.slashed_amount;
-                }
-                if total_slashed != token::Amount::default() {
-                    writeln!(
-                        w,
-                        "Active (slashed) bonds total: {}",
-                        total - total_slashed
-                    )
-                    .unwrap();
-                }
-                writeln!(w, "Bonds total: {}", total).unwrap();
-                bonds_total += total;
-                bonds_total_slashed += total_slashed;
-
-                let mut total: token::Amount = 0.into();
-                let mut total_slashed: token::Amount = 0.into();
-
-                let mut withdrawable = token::Amount::default();
-                if !details.unbonds.is_empty() {
-                    let mut total: token::Amount = 0.into();
-                    let mut total_slashed: token::Amount = 0.into();
-                    let bond_type: Cow<str> = if bond_id.source
-                        == bond_id.validator
-                    {
-                        "Unbonded self-bonds".into()
-                    } else {
-                        format!("Unbonded elegations from {}", bond_id.source,)
-                            .into()
-                    };
-                    writeln!(w, "{}:", bond_type).unwrap();
-                    for unbond in details.unbonds {
-                        total += unbond.amount;
-                        total_slashed += unbond.slashed_amount;
-                        writeln!(
-                            w,
-                            "  Withdrawable from epoch {} (active from {}): Δ \
-                             {}",
-                            unbond.withdraw, unbond.start, unbond.amount
-                        )
-                        .unwrap();
-                    }
-                    withdrawable = total - total_slashed;
-                    writeln!(w, "Unbonded total: {}", total).unwrap();
-
-                    unbond_total += total;
-                    unbond_total_slashed += total_slashed;
-                    total_withdrawable += withdrawable;
-                }
-                writeln!(w, "Withdrawable total: {}", withdrawable).unwrap();
-            }
-            if bonds_total != bonds_total_slashed {
-                println!(
-                    "All bonds total active: {}",
-                    bonds_total - bonds_total_slashed
-                );
-            }
-            println!("All bonds total: {}", bonds_total);
-
-            if unbonds_total != unbonds_total_slashed {
-                println!(
-                    "All unbonds total active: {}",
-                    unbonds_total - unbonds_total_slashed
-                );
-            }
-            println!("All unbonds total: {}", unbonds_total);
-            println!("Total withdrawable: {}", total_withdrawable);
-        }
-        // All bonds and unbonds to the target validator
-        (None, Some(_)) => todo!(),
-        // All bonds and unbonds for the source address
-        (Some(owner), None) => {
-            let source = ctx.get(&owner);
-
-            let bonds_and_unbonds: pos::types::BondsAndUnbondsDetails =
-                unwrap_client_response(
-                    RPC.vp()
-                        .pos()
-                        .bonds_and_unbonds(&client, &Some(owner), &None)
-                        .await,
-                );
-            if !bonds_and_unbonds.is_empty() {
-                for (bond_id, details) in bonds_and_unbonds {
-                    let stdout = io::stdout();
-                    let mut w = stdout.lock();
-
-                    if !details.bonds.is_empty() {
-                        let mut total: token::Amount = 0.into();
-                        let mut total_slashed: token::Amount = 0.into();
-                        let bond_type: Cow<str> =
-                            if bond_id.source == bond_id.validator {
-                                "Self-bonds".into()
-                            } else {
-                                format!(
-                                    "Delegations from {} to {}",
-                                    bond_id.source, bond_id.validator
-                                )
-                                .into()
-                            };
-                        writeln!(w, "{}:", bond_type).unwrap();
-                        for bond in details.bonds {
-                            writeln!(
-                                w,
-                                "  Remaining active bond from epoch {}: Δ {}",
-                                bond.start, bond.amount
-                            )
-                            .unwrap();
-                            total += bond.amount;
-                            total_slashed += bond.slashed_amount;
-                        }
-                        if total_slashed != token::Amount::default() {
-                            writeln!(
-                                w,
-                                "Active (slashed) bonds total: {}",
-                                total - total_slashed
-                            )
-                            .unwrap();
-                        }
-                        writeln!(w, "Bonds total: {}", total).unwrap();
-                    }
-
-                    let mut withdrawable = token::Amount::default();
-                    if !details.unbonds.is_empty() {
-                        let mut total: token::Amount = 0.into();
-                        let mut total_slashed: token::Amount = 0.into();
-                        let bond_type: Cow<str> =
-                            if bond_id.source == bond_id.validator {
-                                "Unbonded self-bonds".into()
-                            } else {
-                                format!(
-                                    "Unbonded elegations from {}",
-                                    bond_id.source,
-                                )
-                                .into()
-                            };
-                        writeln!(w, "{}:", bond_type).unwrap();
-                        for unbond in details.unbonds {
-                            total += unbond.amount;
-                            total_slashed += unbond.slashed_amount;
-                            writeln!(
-                                w,
-                                "  Withdrawable from epoch {} (active from \
-                                 {}): Δ {}",
-                                unbond.withdraw, unbond.start, unbond.amount
-                            )
-                            .unwrap();
-                        }
-                        withdrawable = total - total_slashed;
-                        writeln!(w, "Unbonded total: {}", total).unwrap();
-                    }
-                    writeln!(w, "Withdrawable total: {}", withdrawable)
-                        .unwrap();
-                }
-            } else {
-                println!("No self-bonds or delegations found for {}", source);
-            }
-        }
-        // All bonds and unbonds for the given source-validator pair
-        (Some(owner), Some(validator)) => {
-            let source = ctx.get(&owner);
-            let validator = ctx.get(&validator);
-
-            let bonds_and_unbonds: pos::types::BondsAndUnbondsDetails =
-                unwrap_client_response(
-                    RPC.vp()
-                        .pos()
-                        .bonds_and_unbonds(
-                            &client,
-                            &Some(owner),
-                            &Some(validator),
-                        )
-                        .await,
-                );
-
-            let bond_id = pos::BondId { source, validator };
-
-            let bonds_and_unbonds = bonds_and_unbonds.get(&bond_id);
-            if let Some(BondsAndUnbondsDetail {
-                bonds,
-                unbonds,
-                slashes,
-            }) = bonds_and_unbonds
-            {
-                if !bonds.is_empty() {
-                    let bond_type = if bond_id.source == bond_id.validator {
-                        "Self-bonds"
-                    } else {
-                        "Delegations"
-                    };
-                    writeln!(w, "{}:", bond_type).unwrap();
-
-                    let mut total = token::Amount::default();
-                    let mut total_slashed = token::Amount::default();
-                    for bond in bonds {
-                        writeln!(
-                            w,
-                            "  Remaining active bond from epoch {}: Δ {}",
-                            bond.start, bond.amount
-                        )
-                        .unwrap();
-                        total += bond.amount;
-                        total_slashed += bond.slashed_amount;
-                    }
-                    if total_slashed != token::Amount::default() {
-                        writeln!(
-                            w,
-                            "Active (slashed) bonds total: {}",
-                            total - total_slashed
-                        )
-                        .unwrap();
-                    }
-                    writeln!(w, "Bonds total: {}", total).unwrap();
-                }
-
-                if !unbonds.is_empty() {
-                    let bond_type = if bond_id.source == bond_id.validator {
-                        "Unbonded self-bonds"
-                    } else {
-                        "Unbonded delegations"
-                    };
-                    writeln!(w, "{}:", bond_type).unwrap();
-                    let mut total = token::Amount::default();
-                    let mut total_slashed = token::Amount::default();
-
-                    for unbond in unbonds {
-                        total += unbond.amount;
-                        total_slashed += unbond.slashed_amount;
-                        writeln!(
-                            w,
-                            "  Withdrawable from epoch {} (active from {}): Δ \
-                             {}",
-                            unbond.withdraw, unbond.start, unbond.amount
-                        )
-                        .unwrap();
-                    }
-                    let withdrawable = total - total_slashed;
-                    writeln!(w, "Withdrawable total: {}", withdrawable)
-                        .unwrap();
-                    writeln!(w, "Unbonded total: {}", total).unwrap();
-                }
-            } else {
-                writeln!(
-                    w,
-                    "No delegations found for {} to validator {}",
-                    bond_id.source,
-                    bond_id.validator.encode()
-                )
-                .unwrap();
-            }
-        }
-    }
-}
-
-/// Query PoS bond(s)
-pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
-    let epoch = query_epoch(args.query.clone()).await;
-    let client = HttpClient::new(args.query.ledger_address).unwrap();
-
     let bonds_and_unbonds: pos::types::BondsAndUnbondsDetails =
         unwrap_client_response(
             RPC.vp()
                 .pos()
-                .bonds_and_unbonds(&client, &args.owner, &args.validator)
+                .bonds_and_unbonds(&client, &None, &None)
                 .await,
         );
-
-    match (args.owner, args.validator) {
-        (Some(owner), Some(validator)) => {
-            let source = ctx.get(&owner);
-            let validator = ctx.get(&validator);
-            // Find owner's delegations to the given validator
-            let bond_id = pos::BondId { source, validator };
-            let bond_key = pos::bond_key(&bond_id);
-
-            // TODO: do we want to return the bond deltas by epoch instead?
-            let bond_amount: token::Amount = unwrap_client_response(
-                RPC.vp()
-                    .pos()
-                    .bond_with_slashing(&client, &source, &validator, &epoch)
-                    .await,
-            );
-            // let bonds =
-            //     query_storage_value::<pos::Bonds>(&client, &bond_key).await;
-
-            // Find owner's unbonded delegations from the given
-            // validator
-            let unbonds: HashMap<(Epoch, Epoch), token::Amount> =
-                unwrap_client_response(
-                    RPC.vp()
-                        .pos()
-                        .unbond_new(&client, &source, &validator)
-                        .await,
-                );
-
-            // Find validator's slashes, if any
-            let slashes: Vec<SlashNew> = unwrap_client_response(
-                RPC.vp().pos().validator_slashes(&client, &validator).await,
-            );
-
-            let stdout = io::stdout();
-            let mut w = stdout.lock();
-
-            if let Some(bonds) = &bonds {
-                let bond_type = if bond_id.source == bond_id.validator {
-                    "Self-bonds"
-                } else {
-                    "Delegations"
-                };
-                writeln!(w, "{}:", bond_type).unwrap();
-                process_bonds_query(
-                    bonds,
-                    slashes.as_slice(),
-                    &epoch,
-                    None,
-                    None,
-                    None,
-                    &mut w,
-                );
-            }
-
-            if let Some(unbonds) = &unbonds {
-                let bond_type = if bond_id.source == bond_id.validator {
-                    "Unbonded self-bonds"
-                } else {
-                    "Unbonded delegations"
-                };
-                writeln!(w, "{}:", bond_type).unwrap();
-                process_unbonds_query(
-                    unbonds,
-                    slashes.as_slice(),
-                    &epoch,
-                    None,
-                    None,
-                    None,
-                    &mut w,
-                );
-            }
-
-            if bonds.is_none() && unbonds.is_none() {
-                writeln!(
-                    w,
-                    "No delegations found for {} to validator {}",
-                    bond_id.source,
-                    bond_id.validator.encode()
-                )
-                .unwrap();
-            }
+    let mut bonds_total: token::Amount = 0.into();
+    let mut bonds_total_slashed: token::Amount = 0.into();
+    let mut unbonds_total: token::Amount = 0.into();
+    let mut unbonds_total_slashed: token::Amount = 0.into();
+    let mut total_withdrawable: token::Amount = 0.into();
+    for (bond_id, details) in bonds_and_unbonds {
+        let mut total: token::Amount = 0.into();
+        let mut total_slashed: token::Amount = 0.into();
+        let bond_type = if bond_id.source == bond_id.validator {
+            format!("Self-bonds from {}", bond_id.validator)
+        } else {
+            format!(
+                "Delegations from {} to {}",
+                bond_id.source, bond_id.validator
+            )
+        };
+        writeln!(w, "{}:", bond_type).unwrap();
+        for bond in details.bonds {
+            writeln!(
+                w,
+                "  Remaining active bond from epoch {}: Δ {}",
+                bond.start, bond.amount
+            )
+            .unwrap();
+            total += bond.amount;
+            total_slashed += bond.slashed_amount.unwrap_or_default();
         }
-        (None, Some(validator)) => {
-            let validator = ctx.get(&validator);
-            // Find validator's self-bonds
-            let bond_id = pos::BondId {
-                source: validator.clone(),
-                validator,
+        if total_slashed != token::Amount::default() {
+            writeln!(
+                w,
+                "Active (slashed) bonds total: {}",
+                total - total_slashed
+            )
+            .unwrap();
+        }
+        writeln!(w, "Bonds total: {}", total).unwrap();
+        bonds_total += total;
+        bonds_total_slashed += total_slashed;
+
+        let mut total: token::Amount = 0.into();
+        let mut total_slashed: token::Amount = 0.into();
+
+        let mut withdrawable = token::Amount::default();
+        if !details.unbonds.is_empty() {
+            let mut total: token::Amount = 0.into();
+            let mut total_slashed: token::Amount = 0.into();
+            let bond_type = if bond_id.source == bond_id.validator {
+                format!("Unbonded self-bonds from {}", bond_id.validator)
+            } else {
+                format!("Unbonded delegations from {}", bond_id.source)
             };
-            let bond_key = pos::bond_key(&bond_id);
-            let bonds =
-                query_storage_value::<pos::Bonds>(&client, &bond_key).await;
-            // Find validator's unbonded self-bonds
-            let unbond_key = pos::unbond_key(&bond_id);
-            let unbonds =
-                query_storage_value::<pos::Unbonds>(&client, &unbond_key).await;
-            // Find validator's slashes, if any
-            let slashes_key = pos::validator_slashes_key(&bond_id.validator);
-            let slashes =
-                query_storage_value::<pos::Slashes>(&client, &slashes_key)
-                    .await
-                    .unwrap_or_default();
-
-            let stdout = io::stdout();
-            let mut w = stdout.lock();
-
-            if let Some(bonds) = &bonds {
-                writeln!(w, "Self-bonds:").unwrap();
-                process_bonds_query(
-                    bonds, &slashes, &epoch, None, None, None, &mut w,
-                );
-            }
-
-            if let Some(unbonds) = &unbonds {
-                writeln!(w, "Unbonded self-bonds:").unwrap();
-                process_unbonds_query(
-                    unbonds, &slashes, &epoch, None, None, None, &mut w,
-                );
-            }
-
-            if bonds.is_none() && unbonds.is_none() {
+            writeln!(w, "{}:", bond_type).unwrap();
+            for unbond in details.unbonds {
+                total += unbond.amount;
+                total_slashed += unbond.slashed_amount.unwrap_or_default();
                 writeln!(
                     w,
-                    "No self-bonds found for validator {}",
-                    bond_id.validator.encode()
+                    "  Withdrawable from epoch {} (active from {}): Δ {}",
+                    unbond.withdraw, unbond.start, unbond.amount
                 )
                 .unwrap();
             }
+            withdrawable = total - total_slashed;
+            writeln!(w, "Unbonded total: {}", total).unwrap();
+
+            unbonds_total += total;
+            unbonds_total_slashed += total_slashed;
+            total_withdrawable += withdrawable;
         }
-        (Some(owner), None) => {
-            let owner = ctx.get(&owner);
-            // Find owner's bonds to any validator
-            let bonds_prefix = pos::bonds_for_source_prefix(&owner);
-            let bonds =
-                query_storage_prefix::<pos::Bonds>(&client, &bonds_prefix)
-                    .await;
-            // Find owner's unbonds to any validator
-            let unbonds_prefix = pos::unbonds_for_source_prefix(&owner);
-            let unbonds =
-                query_storage_prefix::<pos::Unbonds>(&client, &unbonds_prefix)
-                    .await;
-
-            let mut total: token::Amount = 0.into();
-            let mut total_active: token::Amount = 0.into();
-            let mut any_bonds = false;
-            if let Some(bonds) = bonds {
-                for (key, bonds) in bonds {
-                    match pos::is_bond_key(&key) {
-                        Some(pos::BondId { source, validator }) => {
-                            // Find validator's slashes, if any
-                            let slashes_key =
-                                pos::validator_slashes_key(&validator);
-                            let slashes = query_storage_value::<pos::Slashes>(
-                                &client,
-                                &slashes_key,
-                            )
-                            .await
-                            .unwrap_or_default();
-
-                            let stdout = io::stdout();
-                            let mut w = stdout.lock();
-                            any_bonds = true;
-                            let bond_type: Cow<str> = if source == validator {
-                                "Self-bonds".into()
-                            } else {
-                                format!(
-                                    "Delegations from {} to {}",
-                                    source, validator
-                                )
-                                .into()
-                            };
-                            writeln!(w, "{}:", bond_type).unwrap();
-                            let (tot, tot_active) = process_bonds_query(
-                                &bonds,
-                                &slashes,
-                                &epoch,
-                                Some(&source),
-                                Some(total),
-                                Some(total_active),
-                                &mut w,
-                            );
-                            total = tot;
-                            total_active = tot_active;
-                        }
-                        None => {
-                            panic!("Unexpected storage key {}", key)
-                        }
-                    }
-                }
-            }
-            if total_active != 0.into() && total_active != total {
-                println!("Active bonds total: {}", total_active);
-            }
-
-            let mut total: token::Amount = 0.into();
-            let mut total_withdrawable: token::Amount = 0.into();
-            if let Some(unbonds) = unbonds {
-                for (key, unbonds) in unbonds {
-                    match pos::is_unbond_key(&key) {
-                        Some(pos::BondId { source, validator }) => {
-                            // Find validator's slashes, if any
-                            let slashes_key =
-                                pos::validator_slashes_key(&validator);
-                            let slashes = query_storage_value::<pos::Slashes>(
-                                &client,
-                                &slashes_key,
-                            )
-                            .await
-                            .unwrap_or_default();
-
-                            let stdout = io::stdout();
-                            let mut w = stdout.lock();
-                            any_bonds = true;
-                            let bond_type: Cow<str> = if source == validator {
-                                "Unbonded self-bonds".into()
-                            } else {
-                                format!("Unbonded delegations from {}", source)
-                                    .into()
-                            };
-                            writeln!(w, "{}:", bond_type).unwrap();
-                            let (tot, tot_withdrawable) = process_unbonds_query(
-                                &unbonds,
-                                &slashes,
-                                &epoch,
-                                Some(&source),
-                                Some(total),
-                                Some(total_withdrawable),
-                                &mut w,
-                            );
-                            total = tot;
-                            total_withdrawable = tot_withdrawable;
-                        }
-                        None => {
-                            panic!("Unexpected storage key {}", key)
-                        }
-                    }
-                }
-            }
-            if total_withdrawable != 0.into() {
-                println!("Withdrawable total: {}", total_withdrawable);
-            }
-
-            if !any_bonds {
-                println!("No self-bonds or delegations found for {}", owner);
-            }
-        }
-        (None, None) => {
-            // Find all the bonds
-            let bonds_prefix = pos::bonds_prefix();
-            let bonds =
-                query_storage_prefix::<pos::Bonds>(&client, &bonds_prefix)
-                    .await;
-            // Find all the unbonds
-            let unbonds_prefix = pos::unbonds_prefix();
-            let unbonds =
-                query_storage_prefix::<pos::Unbonds>(&client, &unbonds_prefix)
-                    .await;
-
-            let mut total: token::Amount = 0.into();
-            let mut total_active: token::Amount = 0.into();
-            if let Some(bonds) = bonds {
-                for (key, bonds) in bonds {
-                    match pos::is_bond_key(&key) {
-                        Some(pos::BondId { source, validator }) => {
-                            // Find validator's slashes, if any
-                            let slashes_key =
-                                pos::validator_slashes_key(&validator);
-                            let slashes = query_storage_value::<pos::Slashes>(
-                                &client,
-                                &slashes_key,
-                            )
-                            .await
-                            .unwrap_or_default();
-
-                            let stdout = io::stdout();
-                            let mut w = stdout.lock();
-                            let bond_type = if source == validator {
-                                format!("Self-bonds for {}", validator.encode())
-                            } else {
-                                format!(
-                                    "Delegations from {} to validator {}",
-                                    source,
-                                    validator.encode()
-                                )
-                            };
-                            writeln!(w, "{}:", bond_type).unwrap();
-                            let (tot, tot_active) = process_bonds_query(
-                                &bonds,
-                                &slashes,
-                                &epoch,
-                                Some(&source),
-                                Some(total),
-                                Some(total_active),
-                                &mut w,
-                            );
-                            total = tot;
-                            total_active = tot_active;
-                        }
-                        None => {
-                            panic!("Unexpected storage key {}", key)
-                        }
-                    }
-                }
-            }
-            if total_active != 0.into() && total_active != total {
-                println!("Bond total active: {}", total_active);
-            }
-            println!("Bond total: {}", total);
-
-            let mut total: token::Amount = 0.into();
-            let mut total_withdrawable: token::Amount = 0.into();
-            if let Some(unbonds) = unbonds {
-                for (key, unbonds) in unbonds {
-                    match pos::is_unbond_key(&key) {
-                        Some(pos::BondId { source, validator }) => {
-                            // Find validator's slashes, if any
-                            let slashes_key =
-                                pos::validator_slashes_key(&validator);
-                            let slashes = query_storage_value::<pos::Slashes>(
-                                &client,
-                                &slashes_key,
-                            )
-                            .await
-                            .unwrap_or_default();
-
-                            let stdout = io::stdout();
-                            let mut w = stdout.lock();
-                            let bond_type = if source == validator {
-                                format!(
-                                    "Unbonded self-bonds for {}",
-                                    validator.encode()
-                                )
-                            } else {
-                                format!(
-                                    "Unbonded delegations from {} to \
-                                     validator {}",
-                                    source,
-                                    validator.encode()
-                                )
-                            };
-                            writeln!(w, "{}:", bond_type).unwrap();
-                            let (tot, tot_withdrawable) = process_unbonds_query(
-                                &unbonds,
-                                &slashes,
-                                &epoch,
-                                Some(&source),
-                                Some(total),
-                                Some(total_withdrawable),
-                                &mut w,
-                            );
-                            total = tot;
-                            total_withdrawable = tot_withdrawable;
-                        }
-                        None => {
-                            panic!("Unexpected storage key {}", key)
-                        }
-                    }
-                }
-            }
-            if total_withdrawable != 0.into() {
-                println!("Withdrawable total: {}", total_withdrawable);
-            }
-            println!("Unbonded total: {}", total);
-        }
+        writeln!(w, "Withdrawable total: {}", withdrawable).unwrap();
+        println!();
     }
+    if bonds_total != bonds_total_slashed {
+        println!(
+            "All bonds total active: {}",
+            bonds_total - bonds_total_slashed
+        );
+    }
+    println!("All bonds total: {}", bonds_total);
+
+    if unbonds_total != unbonds_total_slashed {
+        println!(
+            "All unbonds total active: {}",
+            unbonds_total - unbonds_total_slashed
+        );
+    }
+    println!("All unbonds total: {}", unbonds_total);
+    println!("All unbonds total withdrawable: {}", total_withdrawable);
 }
 
 /// Query PoS bonded stake
@@ -2429,157 +1857,6 @@ fn apply_slashes(
         }
     }
     delta
-}
-
-/// Process the result of a bonds query to determine total bonds
-/// and total active bonds. This includes taking into account
-/// an aggregation of slashes since the start of the given epoch.
-fn process_bonds_query(
-    bonds: &Bonds,
-    slashes: &[SlashNew],
-    epoch: &Epoch,
-    source: Option<&Address>,
-    total: Option<token::Amount>,
-    total_active: Option<token::Amount>,
-    w: &mut std::io::StdoutLock,
-) -> (token::Amount, token::Amount) {
-    let mut total_active = total_active.unwrap_or_else(|| 0.into());
-    let mut current_total: token::Amount = 0.into();
-    for bond in bonds.iter() {
-        for (epoch_start, &(mut delta)) in bond.pos_deltas.iter().sorted() {
-            writeln!(w, "  Active from epoch {}: Δ {}", epoch_start, delta)
-                .unwrap();
-            delta = apply_slashes(slashes, delta, *epoch_start, None, Some(w));
-            current_total += delta;
-            if epoch >= epoch_start {
-                total_active += delta;
-            }
-        }
-    }
-    let total = total.unwrap_or_else(|| 0.into()) + current_total;
-    match source {
-        Some(addr) => {
-            writeln!(w, "  Bonded total from {}: {}", addr, current_total)
-                .unwrap();
-        }
-        None => {
-            if total_active != 0.into() && total_active != total {
-                writeln!(w, "Active bonds total: {}", total_active).unwrap();
-            }
-            writeln!(w, "Bonds total: {}", total).unwrap();
-        }
-    }
-    (total, total_active)
-}
-
-/// Process the result of a bonds query to determine total bonds
-/// and total active bonds. This includes taking into account
-/// an aggregation of slashes since the start of the given epoch.
-fn process_bonds_query_new(
-    bonds: &Bonds,
-    slashes: &[SlashNew],
-    epoch: &Epoch,
-    source: Option<&Address>,
-    total: Option<token::Amount>,
-    total_active: Option<token::Amount>,
-    w: &mut std::io::StdoutLock,
-) -> (token::Amount, token::Amount) {
-    let mut total_active = total_active.unwrap_or_else(|| 0.into());
-    let mut current_total: token::Amount = 0.into();
-
-    let (current_total, total_active): (token::Amount, token::Amount) =
-        unwrap_client_response(
-            RPC.vp()
-                .pos()
-                .bond_with_slashing(&client, &source, &validator, &epoch)
-                .await,
-        );
-    let bonds_remaining = unwrap_client_response(
-        RPC.vp()
-            .pos()
-            .bond_deltas(&client, &source, &validator, &epoch)
-            .await,
-    );
-
-    // for bond in bonds.iter() {
-    //     for (epoch_start, &(mut delta)) in bond.pos_deltas.iter().sorted() {
-    //         writeln!(w, "  Active from epoch {}: Δ {}", epoch_start, delta)
-    //             .unwrap();
-    //         delta = apply_slashes(slashes, delta, *epoch_start, None,
-    // Some(w));         current_total += delta;
-    //         if epoch >= epoch_start {
-    //             total_active += delta;
-    //         }
-    //     }
-    // }
-    // let total = total.unwrap_or_else(|| 0.into()) + current_total;
-    // match source {
-    //     Some(addr) => {
-    //         writeln!(w, "  Bonded total from {}: {}", addr, current_total)
-    //             .unwrap();
-    //     }
-    //     None => {
-    //         if total_active != 0.into() && total_active != total {
-    //             writeln!(w, "Active bonds total: {}", total_active).unwrap();
-    //         }
-    //         writeln!(w, "Bonds total: {}", total).unwrap();
-    //     }
-    // }
-    (total, total_active)
-}
-
-/// Process the result of an unbonds query to determine total bonds
-/// and total withdrawable bonds. This includes taking into account
-/// an aggregation of slashes since the start of the given epoch up
-/// until the withdrawal epoch.
-fn process_unbonds_query(
-    unbonds: &HashMap<(Epoch, Epoch), token::Amount>,
-    slashes: &[SlashNew],
-    epoch: &Epoch,
-    source: Option<&Address>,
-    total: Option<token::Amount>,
-    total_withdrawable: Option<token::Amount>,
-    w: &mut std::io::StdoutLock,
-) -> (token::Amount, token::Amount) {
-    let mut withdrawable = total_withdrawable.unwrap_or_else(|| 0.into());
-    let mut current_total: token::Amount = 0.into();
-
-    for ((epoch_start, epoch_end), &(mut delta)) in
-        deltas.deltas.iter().sorted()
-    {
-        let withdraw_epoch = *epoch_end + 1_u64;
-        writeln!(
-            w,
-            "  Withdrawable from epoch {} (active from {}): Δ {}",
-            withdraw_epoch, epoch_start, delta
-        )
-        .unwrap();
-        delta = apply_slashes(
-            slashes,
-            delta,
-            *epoch_start,
-            Some(withdraw_epoch),
-            Some(w),
-        );
-        current_total += delta;
-        if epoch > epoch_end {
-            withdrawable += delta;
-        }
-    }
-    let total = total.unwrap_or_else(|| 0.into()) + current_total;
-    match source {
-        Some(addr) => {
-            writeln!(w, "  Unbonded total from {}: {}", addr, current_total)
-                .unwrap();
-        }
-        None => {
-            if withdrawable != 0.into() {
-                writeln!(w, "Withdrawable total: {}", withdrawable).unwrap();
-            }
-            writeln!(w, "Unbonded total: {}", total).unwrap();
-        }
-    }
-    (total, withdrawable)
 }
 
 /// Query for all conversions.

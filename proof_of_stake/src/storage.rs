@@ -287,7 +287,7 @@ pub fn bond_key(bond_id: &BondId) -> Key {
 
 /// Is storage key for a bond?
 pub fn is_bond_key(key: &Key) -> Option<BondId> {
-    if key.segments.len() > 4 {
+    if key.segments.len() >= 4 {
         match &key.segments[..4] {
             [
                 DbKeySeg::AddressSeg(addr),
@@ -309,17 +309,19 @@ pub fn is_bond_key(key: &Key) -> Option<BondId> {
 
 /// Is storage key for a bond? Returns the bond ID and bond start epoch if so.
 pub fn is_bond_key_new(key: &Key) -> Option<(BondId, Epoch)> {
-    if key.segments.len() > 6 {
-        match &key.segments[..6] {
+    if key.segments.len() >= 7 {
+        match &key.segments[..7] {
             [
                 DbKeySeg::AddressSeg(addr),
                 DbKeySeg::StringSeg(prefix),
                 DbKeySeg::AddressSeg(source),
                 DbKeySeg::AddressSeg(validator),
+                DbKeySeg::StringSeg(lazy_map),
                 DbKeySeg::StringSeg(data),
                 DbKeySeg::StringSeg(epoch_str),
             ] if addr == &ADDRESS
                 && prefix == BOND_STORAGE_KEY
+                && lazy_map == crate::epoched_new::LAZY_MAP_SUB_KEY
                 && data == lazy_map::DATA_SUBKEY =>
             {
                 let start = Epoch::parse(epoch_str.clone()).ok()?;
@@ -378,7 +380,7 @@ pub fn is_unbond_key(key: &Key) -> Option<BondId> {
 /// Is storage key for an unbond? Returns the bond ID and unbond start and
 /// withdraw epoch if it is.
 pub fn is_unbond_key_new(key: &Key) -> Option<(BondId, Epoch, Epoch)> {
-    if key.segments.len() > 8 {
+    if key.segments.len() >= 8 {
         match &key.segments[..8] {
             [
                 DbKeySeg::AddressSeg(addr),
@@ -390,7 +392,7 @@ pub fn is_unbond_key_new(key: &Key) -> Option<(BondId, Epoch, Epoch)> {
                 DbKeySeg::StringSeg(data_2),
                 DbKeySeg::StringSeg(start_epoch_str),
             ] if addr == &ADDRESS
-                && prefix == BOND_STORAGE_KEY
+                && prefix == UNBOND_STORAGE_KEY
                 && data_1 == lazy_map::DATA_SUBKEY
                 && data_2 == lazy_map::DATA_SUBKEY =>
             {
