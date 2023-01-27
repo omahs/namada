@@ -155,9 +155,7 @@ async fn run_oracle_aux(mut oracle: Oracle) {
     // confirmations
     let mut pending: Vec<PendingEvent> = Vec::new();
 
-    // TODO(namada#560): get the appropriate Ethereum block height to start
-    // checking from rather than starting from zero every time
-    let mut next_block_to_process: Uint256 = 0u8.into();
+    let mut next_block_to_process: Uint256 = config.start_block.into();
 
     loop {
         tracing::info!(
