@@ -33,7 +33,7 @@ use crate::types::{
 use crate::{
     active_validator_set_handle, become_validator_new, bond_handle,
     bond_tokens_new, bonds_and_unbonds, copy_validator_sets_and_positions,
-    find_unbonds, find_validator_by_raw_hash, inactive_validator_set_handle,
+    find_validator_by_raw_hash, inactive_validator_set_handle,
     init_genesis_new, insert_validator_into_validator_set,
     read_active_validator_set_addresses_with_stake,
     read_inactive_validator_set_addresses_with_stake,

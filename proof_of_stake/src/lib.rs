@@ -49,8 +49,9 @@ use parameters::PosParams;
 use rust_decimal::Decimal;
 use storage::{
     bonds_for_source_prefix, bonds_prefix, get_validator_address_from_bond,
-    into_tm_voting_power, is_bond_key_new, is_unbond_key_new, mult_amount,
-    mult_change_to_amount, num_active_validators_key, params_key,
+    into_tm_voting_power, is_bond_key_new, is_unbond_key_new,
+    is_validator_slashes_key_new, mult_amount, mult_change_to_amount,
+    num_active_validators_key, params_key, slashes_prefix,
     unbonds_for_source_prefix, unbonds_prefix, validator_address_raw_hash_key,
     validator_max_commission_rate_change_key, BondDetails,
     BondsAndUnbondsDetail, BondsAndUnbondsDetails, ReverseOrdTokenAmount,
@@ -2181,6 +2182,36 @@ where
     Ok(state.is_some())
 }
 
+/// Check if the provided address is a delegator address, optionally at a
+/// particular epoch
+pub fn is_delegator<S>(
+    storage: &S,
+    address: &Address,
+    epoch: Option<namada_core::types::storage::Epoch>,
+) -> storage_api::Result<bool>
+where
+    S: StorageRead + StorageWrite,
+{
+    let prefix = bonds_for_source_prefix(address);
+    match epoch {
+        Some(epoch) => {
+            let iter = storage_api::iter_prefix_bytes(storage, &prefix)?;
+            for res in iter {
+                let (key, _) = res?;
+                if let Some((_, bond_epoch)) = is_bond_key_new(&key) {
+                    if bond_epoch <= epoch {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        }
+        None => Ok(storage_api::iter_prefix_bytes(storage, &prefix)?
+            .next()
+            .is_some()),
+    }
+}
+
 /// NEW: Self-bond tokens to a validator when `source` is `None` or equal to
 /// the `validator` address, or delegate tokens from the `source` to the
 /// `validator`.
@@ -3608,6 +3639,9 @@ where
         .collect()
 }
 
+/// Collect the details of all bonds and unbonds that match the source and
+/// validator arguments. If either source or validator is `None`, then grab the
+/// information for all sources or validators, respectively.
 pub fn bonds_and_unbonds<S>(
     storage: &S,
     source: Option<Address>,
@@ -3626,6 +3660,42 @@ where
             get_multiple_bonds_and_unbonds(storage, &params, source, validator)
         }
     }
+}
+
+/// Find all slashes and the associated validators in the PoS system
+pub fn find_all_slashes<S>(
+    storage: &S,
+) -> storage_api::Result<HashMap<Address, Vec<SlashNew>>>
+where
+    S: StorageRead,
+{
+    let mut slashes: HashMap<Address, Vec<SlashNew>> = HashMap::new();
+    let slashes_iter = storage_api::iter_prefix_bytes(
+        storage,
+        &slashes_prefix(),
+    )?
+    .filter_map(|result| {
+        if let Ok((key, val_bytes)) = result {
+            if let Some(validator) = is_validator_slashes_key_new(&key) {
+                let slash: SlashNew =
+                    BorshDeserialize::try_from_slice(&val_bytes).ok()?;
+                return Some((validator, slash));
+            }
+        }
+        None
+    });
+
+    slashes_iter.for_each(|(address, slash)| match slashes.get(&address) {
+        Some(vec) => {
+            let mut vec = vec.clone();
+            vec.push(slash);
+            slashes.insert(address, vec);
+        }
+        None => {
+            slashes.insert(address, vec![slash]);
+        }
+    });
+    Ok(slashes)
 }
 
 fn get_multiple_bonds_and_unbonds<S>(
@@ -3662,7 +3732,8 @@ where
                         && source.as_ref().unwrap() != &bond_id.source
                     {
                         return None;
-                    } else if validator.is_some()
+                    }
+                    if validator.is_some()
                         && validator.as_ref().unwrap() != &bond_id.validator
                     {
                         return None;
@@ -3690,7 +3761,8 @@ where
                             && source.as_ref().unwrap() != &bond_id.source
                         {
                             return None;
-                        } else if validator.is_some()
+                        }
+                        if validator.is_some()
                             && validator.as_ref().unwrap() != &bond_id.validator
                         {
                             return None;
@@ -3825,7 +3897,7 @@ fn make_bond_details<S>(
     validator: &Address,
     change: token::Change,
     start: Epoch,
-    slashes: &Vec<SlashNew>,
+    slashes: &[SlashNew],
     applied_slashes: &mut HashMap<Address, HashSet<SlashNew>>,
 ) -> BondDetails {
     let amount = token::Amount::from_change(change);
@@ -3862,7 +3934,7 @@ fn make_unbond_details<S>(
     validator: &Address,
     amount: token::Amount,
     (start, withdraw): (Epoch, Epoch),
-    slashes: &Vec<SlashNew>,
+    slashes: &[SlashNew],
     applied_slashes: &mut HashMap<Address, HashSet<SlashNew>>,
 ) -> UnbondDetails {
     let slashed_amount =

@@ -15,7 +15,6 @@ use async_std::prelude::*;
 use borsh::{BorshDeserialize, BorshSerialize};
 use data_encoding::HEXLOWER;
 use eyre::{eyre, Context as EyreContext};
-use itertools::Itertools;
 use masp_primitives::asset_type::AssetType;
 use masp_primitives::merkle_tree::MerklePath;
 use masp_primitives::primitives::ViewingKey;
@@ -29,9 +28,8 @@ use namada::ledger::governance::parameters::GovParams;
 use namada::ledger::governance::storage as gov_storage;
 use namada::ledger::native_vp::governance::utils::Votes;
 use namada::ledger::parameters::{storage as param_storage, EpochDuration};
-use namada::ledger::pos::types::decimal_mult_u64;
 use namada::ledger::pos::{
-    self, is_validator_slashes_key, BondId, Bonds, PosParams, Slash,
+    self, BondId, BondsAndUnbondsDetail, PosParams, SlashNew,
 };
 use namada::ledger::queries::{self, RPC};
 use namada::ledger::storage::ConversionState;
@@ -1323,26 +1321,26 @@ pub async fn query_protocol_parameters(
     let key = param_storage::get_max_expected_time_per_block_key();
     let max_block_duration = query_storage_value::<u64>(&client, &key)
         .await
-        .expect("Parameter should be definied.");
+        .expect("Parameter should be defined.");
     println!("{:4}Max. block duration: {}", "", max_block_duration);
 
     let key = param_storage::get_tx_whitelist_storage_key();
     let vp_whitelist = query_storage_value::<Vec<String>>(&client, &key)
         .await
-        .expect("Parameter should be definied.");
+        .expect("Parameter should be defined.");
     println!("{:4}VP whitelist: {:?}", "", vp_whitelist);
 
     let key = param_storage::get_tx_whitelist_storage_key();
     let tx_whitelist = query_storage_value::<Vec<String>>(&client, &key)
         .await
-        .expect("Parameter should be definied.");
+        .expect("Parameter should be defined.");
     println!("{:4}Transactions whitelist: {:?}", "", tx_whitelist);
 
     println!("PoS parameters");
     let key = pos::params_key();
     let pos_params = query_storage_value::<PosParams>(&client, &key)
         .await
-        .expect("Parameter should be definied.");
+        .expect("Parameter should be defined.");
     println!(
         "{:4}Block proposer reward: {}",
         "", pos_params.block_proposer_reward
@@ -1396,10 +1394,13 @@ pub async fn query_withdrawable_tokens(
     )
 }
 
-/// Query PoS bond(s)
-pub async fn query_bonds(_ctx: Context, args: args::QueryBonds) {
+/// Query PoS bond(s) and unbond(s)
+pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
     let _epoch = query_epoch(args.query.clone()).await;
     let client = HttpClient::new(args.query.ledger_address).unwrap();
+
+    let source = args.owner.map(|owner| ctx.get(&owner));
+    let validator = args.validator.map(|val| ctx.get(&val));
 
     let stdout = io::stdout();
     let mut w = stdout.lock();
@@ -1408,7 +1409,7 @@ pub async fn query_bonds(_ctx: Context, args: args::QueryBonds) {
         unwrap_client_response(
             RPC.vp()
                 .pos()
-                .bonds_and_unbonds(&client, &None, &None)
+                .bonds_and_unbonds(&client, &source, &validator)
                 .await,
         );
     let mut bonds_total: token::Amount = 0.into();
@@ -1569,55 +1570,54 @@ pub async fn query_bonded_stake(ctx: Context, args: args::QueryBondedStake) {
     println!("Total bonded stake: {total_staked_tokens}");
 }
 
-/// Query PoS validator's commission rate
+/// Query PoS validator's commission rate information
 pub async fn query_commission_rate(
     ctx: Context,
     args: args::QueryCommissionRate,
 ) {
-    let epoch = match args.epoch {
-        Some(epoch) => epoch,
-        None => query_epoch(args.query.clone()).await,
-    };
     let client = HttpClient::new(args.query.ledger_address.clone()).unwrap();
     let validator = ctx.get(&args.validator);
     let is_validator =
         is_validator(&validator, args.query.ledger_address).await;
 
     if is_validator {
-        let validator_commission_key =
-            pos::validator_commission_rate_key(&validator);
-        let validator_max_commission_change_key =
-            pos::validator_max_commission_rate_change_key(&validator);
-        let commission_rates = query_storage_value::<pos::CommissionRates>(
-            &client,
-            &validator_commission_key,
-        )
-        .await;
-        let max_rate_change = query_storage_value::<Decimal>(
-            &client,
-            &validator_max_commission_change_key,
-        )
-        .await;
-        let max_rate_change =
-            max_rate_change.expect("No max rate change found");
-        let commission_rates =
-            commission_rates.expect("No commission rate found ");
-        match commission_rates.get(epoch) {
-            Some(rate) => {
+        let (commission_rate, max_change): (Option<Decimal>, Option<Decimal>) =
+            unwrap_client_response(
+                RPC.vp()
+                    .pos()
+                    .validator_commission(&client, &validator, &args.epoch)
+                    .await,
+            );
+        match (commission_rate, max_change) {
+            (None, None) => {
+                println!(
+                    "No commission rate or max change found for validator {}",
+                    validator.encode(),
+                );
+            }
+            (None, Some(change)) => {
+                println!(
+                    "Validator {} max commission rate change per epoch: {}, \
+                     but no rate found",
+                    validator.encode(),
+                    change
+                );
+            }
+            (Some(rate), None) => {
+                println!(
+                    "Validator {} commission rate: {}, but no max change found",
+                    validator.encode(),
+                    rate
+                );
+            }
+            (Some(rate), Some(change)) => {
                 println!(
                     "Validator {} commission rate: {}, max change per epoch: \
                      {}",
                     validator.encode(),
-                    *rate,
-                    max_rate_change,
-                )
-            }
-            None => {
-                println!(
-                    "No commission rate found for {} in epoch {}",
-                    validator.encode(),
-                    epoch
-                )
+                    rate,
+                    change
+                );
             }
         }
     } else {
@@ -1628,68 +1628,59 @@ pub async fn query_commission_rate(
 /// Query PoS slashes
 pub async fn query_slashes(ctx: Context, args: args::QuerySlashes) {
     let client = HttpClient::new(args.query.ledger_address).unwrap();
+    let params_key = pos::params_key();
+    let params = query_storage_value::<PosParams>(&client, &params_key)
+        .await
+        .expect("Parameter should be defined.");
+
     match args.validator {
         Some(validator) => {
             let validator = ctx.get(&validator);
             // Find slashes for the given validator
-            let slashes_key = pos::validator_slashes_key(&validator);
-            let slashes =
-                query_storage_value::<pos::Slashes>(&client, &slashes_key)
-                    .await;
-            match slashes {
-                Some(slashes) => {
-                    let stdout = io::stdout();
-                    let mut w = stdout.lock();
+            let slashes: Vec<SlashNew> = unwrap_client_response(
+                RPC.vp().pos().validator_slashes(&client, &validator).await,
+            );
+            if !slashes.is_empty() {
+                let stdout = io::stdout();
+                let mut w = stdout.lock();
+                for slash in slashes {
+                    writeln!(
+                        w,
+                        "Slash epoch {}, type {}, rate {}",
+                        slash.epoch,
+                        slash.r#type,
+                        slash.r#type.get_slash_rate(&params)
+                    )
+                    .unwrap();
+                }
+            } else {
+                println!("No slashes found for {}", validator.encode())
+            }
+        }
+        None => {
+            let all_slashes: HashMap<Address, Vec<SlashNew>> =
+                unwrap_client_response(RPC.vp().pos().slashes(&client).await);
+
+            if !all_slashes.is_empty() {
+                let stdout = io::stdout();
+                let mut w = stdout.lock();
+                for (validator, slashes) in all_slashes.into_iter() {
                     for slash in slashes {
                         writeln!(
                             w,
-                            "Slash epoch {}, rate {}, type {}",
-                            slash.epoch, slash.rate, slash.r#type
+                            "Slash epoch {}, block height {}, rate {}, type \
+                             {}, validator {}",
+                            slash.epoch,
+                            slash.block_height,
+                            slash.r#type.get_slash_rate(&params),
+                            slash.r#type,
+                            validator,
                         )
                         .unwrap();
                     }
                 }
-                None => {
-                    println!("No slashes found for {}", validator.encode())
-                }
-            }
-        }
-        None => {
-            // Iterate slashes for all validators
-            let slashes_prefix = pos::slashes_prefix();
-            let slashes =
-                query_storage_prefix::<pos::Slashes>(&client, &slashes_prefix)
-                    .await;
-
-            match slashes {
-                Some(slashes) => {
-                    let stdout = io::stdout();
-                    let mut w = stdout.lock();
-                    for (slashes_key, slashes) in slashes {
-                        if let Some(validator) =
-                            is_validator_slashes_key(&slashes_key)
-                        {
-                            for slash in slashes {
-                                writeln!(
-                                    w,
-                                    "Slash epoch {}, block height {}, rate \
-                                     {}, type {}, validator {}",
-                                    slash.epoch,
-                                    slash.block_height,
-                                    slash.rate,
-                                    slash.r#type,
-                                    validator,
-                                )
-                                .unwrap();
-                            }
-                        } else {
-                            eprintln!("Unexpected slashes key {}", slashes_key);
-                        }
-                    }
-                }
-                None => {
-                    println!("No slashes found")
-                }
+            } else {
+                println!("No slashes found")
             }
         }
     }
@@ -1742,29 +1733,24 @@ pub async fn is_validator(
 }
 
 /// Check if a given address is a known delegator
-pub async fn is_delegator(
-    address: &Address,
-    ledger_address: TendermintAddress,
-) -> bool {
-    let client = HttpClient::new(ledger_address).unwrap();
-    let bonds_prefix = pos::bonds_for_source_prefix(address);
-    let bonds =
-        query_storage_prefix::<pos::Bonds>(&client, &bonds_prefix).await;
-    bonds.is_some() && bonds.unwrap().count() > 0
+pub async fn is_delegator(client: &HttpClient, address: &Address) -> bool {
+    unwrap_client_response(
+        RPC.vp().pos().is_delegator(client, address, &None).await,
+    )
 }
 
+/// Check if a given address is a known delegator at a particular epoch
 pub async fn is_delegator_at(
     client: &HttpClient,
     address: &Address,
     epoch: Epoch,
 ) -> bool {
-    let key = pos::bonds_for_source_prefix(address);
-    let bonds_iter = query_storage_prefix::<pos::Bonds>(client, &key).await;
-    if let Some(mut bonds) = bonds_iter {
-        bonds.any(|(_, bond)| bond.get(epoch).is_some())
-    } else {
-        false
-    }
+    unwrap_client_response(
+        RPC.vp()
+            .pos()
+            .is_delegator(client, address, &Some(epoch))
+            .await,
+    )
 }
 
 /// Check if the address exists on chain. Established address exists if it has a
@@ -1815,44 +1801,6 @@ pub async fn get_testnet_pow_challenge(
     unwrap_client_response(
         RPC.vp().testnet_pow_challenge(&client, source).await,
     )
-}
-
-/// Accumulate slashes starting from `epoch_start` until (optionally)
-/// `withdraw_epoch` and apply them to the token amount `delta`.
-fn apply_slashes(
-    slashes: &[Slash],
-    mut delta: token::Amount,
-    epoch_start: Epoch,
-    withdraw_epoch: Option<Epoch>,
-    mut w: Option<&mut std::io::StdoutLock>,
-) -> token::Amount {
-    let mut slashed = token::Amount::default();
-    for slash in slashes {
-        if slash.epoch >= epoch_start
-            && slash.epoch < withdraw_epoch.unwrap_or_else(|| u64::MAX.into())
-        {
-            if let Some(w) = w.as_mut() {
-                writeln!(
-                    *w,
-                    "    ⚠ Slash: {} from epoch {}",
-                    slash.rate, slash.epoch
-                )
-                .unwrap();
-            }
-            let raw_delta: u64 = delta.into();
-            let current_slashed =
-                token::Amount::from(decimal_mult_u64(slash.rate, raw_delta));
-            slashed += current_slashed;
-            delta -= current_slashed;
-        }
-    }
-    if let Some(w) = w.as_mut() {
-        if slashed != 0.into() {
-            writeln!(*w, "    ⚠ Slash total: {}", slashed).unwrap();
-            writeln!(*w, "    ⚠ After slashing: Δ {}", delta).unwrap();
-        }
-    }
-    delta
 }
 
 /// Query for all conversions.
@@ -2290,7 +2238,7 @@ pub async fn get_proposal_offline_votes(
     proposal: OfflineProposal,
     files: HashSet<PathBuf>,
 ) -> Votes {
-    let validators = get_all_validators(client, proposal.tally_epoch).await;
+    // let validators = get_all_validators(client, proposal.tally_epoch).await;
 
     let proposal_hash = proposal.compute_hash();
 
@@ -2317,7 +2265,10 @@ pub async fn get_proposal_offline_votes(
         }
 
         if proposal_vote.vote.is_yay()
-            && validators.contains(&proposal_vote.address)
+            // && validators.contains(&proposal_vote.address)
+            && unwrap_client_response(
+                RPC.vp().pos().is_validator(client, &proposal_vote.address).await,
+            )
         {
             let amount: VotePower = get_validator_stake(
                 client,
@@ -2335,76 +2286,122 @@ pub async fn get_proposal_offline_votes(
         )
         .await
         {
-            let key = pos::bonds_for_source_prefix(&proposal_vote.address);
-            let bonds_iter =
-                query_storage_prefix::<pos::Bonds>(client, &key).await;
-            if let Some(bonds) = bonds_iter {
-                for (key, epoched_bonds) in bonds {
-                    // Look-up slashes for the validator in this key and
-                    // apply them if any
-                    let validator = pos::get_validator_address_from_bond(&key)
-                        .expect(
-                            "Delegation key should contain validator address.",
-                        );
-                    let slashes_key = pos::validator_slashes_key(&validator);
-                    let slashes = query_storage_value::<pos::Slashes>(
-                        client,
-                        &slashes_key,
-                    )
-                    .await
-                    .unwrap_or_default();
-                    let mut delegated_amount: token::Amount = 0.into();
-                    let bond = epoched_bonds
-                        .get(proposal.tally_epoch)
-                        .expect("Delegation bond should be defined.");
-                    let mut to_deduct = bond.neg_deltas;
-                    for (start_epoch, &(mut delta)) in
-                        bond.pos_deltas.iter().sorted()
-                    {
-                        // deduct bond's neg_deltas
-                        if to_deduct > delta {
-                            to_deduct -= delta;
-                            // If the whole bond was deducted, continue to
-                            // the next one
-                            continue;
-                        } else {
-                            delta -= to_deduct;
-                            to_deduct = token::Amount::default();
-                        }
-
-                        delta = apply_slashes(
-                            &slashes,
-                            delta,
-                            *start_epoch,
-                            None,
-                            None,
-                        );
-                        delegated_amount += delta;
-                    }
-
-                    let validator_address =
-                        pos::get_validator_address_from_bond(&key).expect(
-                            "Delegation key should contain validator address.",
-                        );
-                    if proposal_vote.vote.is_yay() {
-                        let entry = yay_delegators
-                            .entry(proposal_vote.address.clone())
-                            .or_default();
-                        entry.insert(
-                            validator_address,
-                            VotePower::from(delegated_amount),
-                        );
-                    } else {
-                        let entry = nay_delegators
-                            .entry(proposal_vote.address.clone())
-                            .or_default();
-                        entry.insert(
-                            validator_address,
-                            VotePower::from(delegated_amount),
-                        );
+            // TODO: decide whether to do this with `bond_with_slashing` RPC
+            // endpoint or with `bonds_and_unbonds`
+            let bonds_and_unbonds: pos::types::BondsAndUnbondsDetails =
+                unwrap_client_response(
+                    RPC.vp()
+                        .pos()
+                        .bonds_and_unbonds(
+                            client,
+                            &Some(proposal_vote.address.clone()),
+                            &None,
+                        )
+                        .await,
+                );
+            for (
+                BondId {
+                    source: _,
+                    validator,
+                },
+                BondsAndUnbondsDetail {
+                    bonds,
+                    unbonds: _,
+                    slashes: _,
+                },
+            ) in bonds_and_unbonds
+            {
+                let mut delegated_amount = token::Amount::default();
+                for delta in bonds {
+                    if delta.start <= proposal.tally_epoch {
+                        delegated_amount += delta.amount
+                            - delta.slashed_amount.unwrap_or_default();
                     }
                 }
+                if proposal_vote.vote.is_yay() {
+                    let entry = yay_delegators
+                        .entry(proposal_vote.address.clone())
+                        .or_default();
+                    entry.insert(validator, VotePower::from(delegated_amount));
+                } else {
+                    let entry = nay_delegators
+                        .entry(proposal_vote.address.clone())
+                        .or_default();
+                    entry.insert(validator, VotePower::from(delegated_amount));
+                }
             }
+
+            // let key = pos::bonds_for_source_prefix(&proposal_vote.address);
+            // let bonds_iter =
+            //     query_storage_prefix::<pos::Bonds>(client, &key).await;
+            // if let Some(bonds) = bonds_iter {
+            //     for (key, epoched_bonds) in bonds {
+            //         // Look-up slashes for the validator in this key and
+            //         // apply them if any
+            //         let validator =
+            // pos::get_validator_address_from_bond(&key)
+            //             .expect(
+            //                 "Delegation key should contain validator
+            // address.",             );
+            //         let slashes_key = pos::validator_slashes_key(&validator);
+            //         let slashes = query_storage_value::<pos::Slashes>(
+            //             client,
+            //             &slashes_key,
+            //         )
+            //         .await
+            //         .unwrap_or_default();
+            //         let mut delegated_amount: token::Amount = 0.into();
+            //         let bond = epoched_bonds
+            //             .get(proposal.tally_epoch)
+            //             .expect("Delegation bond should be defined.");
+            //         let mut to_deduct = bond.neg_deltas;
+            //         for (start_epoch, &(mut delta)) in
+            //             bond.pos_deltas.iter().sorted()
+            //         {
+            //             // deduct bond's neg_deltas
+            //             if to_deduct > delta {
+            //                 to_deduct -= delta;
+            //                 // If the whole bond was deducted, continue to
+            //                 // the next one
+            //                 continue;
+            //             } else {
+            //                 delta -= to_deduct;
+            //                 to_deduct = token::Amount::default();
+            //             }
+
+            //             delta = apply_slashes(
+            //                 &slashes,
+            //                 delta,
+            //                 *start_epoch,
+            //                 None,
+            //                 None,
+            //             );
+            //             delegated_amount += delta;
+            //         }
+
+            //         let validator_address =
+            //             pos::get_validator_address_from_bond(&key).expect(
+            //                 "Delegation key should contain validator
+            // address.",             );
+            //         if proposal_vote.vote.is_yay() {
+            //             let entry = yay_delegators
+            //                 .entry(proposal_vote.address.clone())
+            //                 .or_default();
+            //             entry.insert(
+            //                 validator_address,
+            //                 VotePower::from(delegated_amount),
+            //             );
+            //         } else {
+            //             let entry = nay_delegators
+            //                 .entry(proposal_vote.address.clone())
+            //                 .or_default();
+            //             entry.insert(
+            //                 validator_address,
+            //                 VotePower::from(delegated_amount),
+            //             );
+            //         }
+            //     }
+            // }
         }
     }
 
@@ -2476,50 +2473,13 @@ pub async fn get_bond_amount_at(
     validator: &Address,
     epoch: Epoch,
 ) -> Option<token::Amount> {
-    let slashes_key = pos::validator_slashes_key(validator);
-    let slashes = query_storage_value::<pos::Slashes>(client, &slashes_key)
-        .await
-        .unwrap_or_default();
-    let bond_key = pos::bond_key(&BondId {
-        source: delegator.clone(),
-        validator: validator.clone(),
-    });
-    let epoched_bonds = query_storage_value::<Bonds>(client, &bond_key).await;
-    match epoched_bonds {
-        Some(epoched_bonds) => {
-            let mut delegated_amount: token::Amount = 0.into();
-            for bond in epoched_bonds.iter() {
-                let mut to_deduct = bond.neg_deltas;
-                for (epoch_start, &(mut delta)) in
-                    bond.pos_deltas.iter().sorted()
-                {
-                    // deduct bond's neg_deltas
-                    if to_deduct > delta {
-                        to_deduct -= delta;
-                        // If the whole bond was deducted, continue to
-                        // the next one
-                        continue;
-                    } else {
-                        delta -= to_deduct;
-                        to_deduct = token::Amount::default();
-                    }
-
-                    delta = apply_slashes(
-                        &slashes,
-                        delta,
-                        *epoch_start,
-                        None,
-                        None,
-                    );
-                    if epoch >= *epoch_start {
-                        delegated_amount += delta;
-                    }
-                }
-            }
-            Some(delegated_amount)
-        }
-        None => None,
-    }
+    let (_total, total_active) = unwrap_client_response(
+        RPC.vp()
+            .pos()
+            .bond_with_slashing(client, delegator, validator, &Some(epoch))
+            .await,
+    );
+    Some(total_active)
 }
 
 pub async fn get_all_validators(

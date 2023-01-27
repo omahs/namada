@@ -738,6 +738,8 @@ pub fn decimal_mult_i128(dec: Decimal, int: i128) -> i128 {
     prod.to_i128().expect("Product is out of bounds")
 }
 
+/// Multiply a value of type Decimal with one of type i128 and then convert it
+/// to an Amount type
 pub fn mult_change_to_amount(
     dec: Decimal,
     change: token::Change,
@@ -747,6 +749,8 @@ pub fn mult_change_to_amount(
     token::Amount::from(prod.to_u64().expect("Product is out of bounds"))
 }
 
+/// Multiply a value of type Decimal with one of type Amount and then return the
+/// truncated Amount
 pub fn mult_amount(dec: Decimal, amount: token::Amount) -> token::Amount {
     let prod = dec * Decimal::from(amount);
     // truncate the number to the floor

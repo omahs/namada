@@ -124,8 +124,8 @@ fn test_node_connectivity_and_consensus() -> Result<()> {
     client.assert_success();
 
     // 4. Check that all the nodes processed the tx with the same result
-    let mut validator_0 = bg_validator_0.foreground();
-    let mut validator_1 = bg_validator_1.foreground();
+    let validator_0 = bg_validator_0.foreground();
+    let validator_1 = bg_validator_1.foreground();
 
     // let expected_result = "all VPs accepted transaction";
 
@@ -3093,8 +3093,8 @@ fn test_genesis_validators() -> Result<()> {
     client.assert_success();
 
     // 3. Check that all the nodes processed the tx with the same result
-    let mut validator_0 = bg_validator_0.foreground();
-    let mut validator_1 = bg_validator_1.foreground();
+    let validator_0 = bg_validator_0.foreground();
+    let validator_1 = bg_validator_1.foreground();
 
     // let expected_result = "all VPs accepted transaction";
 

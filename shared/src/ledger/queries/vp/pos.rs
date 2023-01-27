@@ -7,11 +7,13 @@ use namada_proof_of_stake::types::{
 };
 use namada_proof_of_stake::{
     self, active_validator_set_handle, bond_amount_new, bond_handle,
-    find_delegation_validators, find_delegations,
+    find_all_slashes, find_delegation_validators, find_delegations,
     inactive_validator_set_handle, read_all_validator_addresses,
-    read_pos_params, read_total_stake, read_validator_stake, unbond_handle,
-    validator_slashes_handle,
+    read_pos_params, read_total_stake,
+    read_validator_max_commission_rate_change, read_validator_stake,
+    unbond_handle, validator_commission_rate_handle, validator_slashes_handle,
 };
+use rust_decimal::Decimal;
 
 use crate::ledger::queries::types::RequestCtx;
 use crate::ledger::storage::{DBIter, StorageHasher, DB};
@@ -21,6 +23,7 @@ use crate::types::storage::Epoch;
 use crate::types::token;
 
 type AmountPair = (token::Amount, token::Amount);
+type CommissionPair = (Option<Decimal>, Option<Decimal>);
 
 // PoS validity predicate queries
 router! {POS,
@@ -35,6 +38,9 @@ router! {POS,
 
         ( "slashes" / [validator: Address] )
             -> Vec<SlashNew> = validator_slashes,
+
+        ( "commission" / [validator: Address] / [epoch: opt Epoch] )
+            -> CommissionPair = validator_commission,
     },
 
     ( "validator_set" ) = {
@@ -76,6 +82,10 @@ router! {POS,
     ( "bonds_and_unbonds" / [source: opt Address] / [validator: opt Address] )
         -> BondsAndUnbondsDetails = bonds_and_unbonds,
 
+    ( "all_slashes" ) -> HashMap<Address, Vec<SlashNew>> = slashes,
+
+    ( "is_delegator" / [addr: Address ] / [epoch: opt Epoch] ) -> bool = is_delegator,
+
 }
 
 // Handlers that implement the functions via `trait StorageRead`:
@@ -98,6 +108,19 @@ where
     )
 }
 
+/// Find if the given address is a delegator
+fn is_delegator<D, H>(
+    ctx: RequestCtx<'_, D, H>,
+    addr: Address,
+    epoch: Option<Epoch>,
+) -> storage_api::Result<bool>
+where
+    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+    H: 'static + StorageHasher + Sync,
+{
+    namada_proof_of_stake::is_delegator(ctx.wl_storage, &addr, epoch)
+}
+
 /// Get all the validator known addresses. These validators may be in any state,
 /// e.g. active, inactive or jailed.
 fn validator_addresses<D, H>(
@@ -110,6 +133,28 @@ where
 {
     let epoch = epoch.unwrap_or(ctx.wl_storage.storage.last_epoch);
     read_all_validator_addresses(ctx.wl_storage, epoch)
+}
+
+/// Get the validator commission rate and max commission rate change per epoch
+fn validator_commission<D, H>(
+    ctx: RequestCtx<'_, D, H>,
+    validator: Address,
+    epoch: Option<Epoch>,
+) -> storage_api::Result<CommissionPair>
+where
+    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+    H: 'static + StorageHasher + Sync,
+{
+    let epoch = epoch.unwrap_or(ctx.wl_storage.storage.last_epoch);
+    let params = read_pos_params(ctx.wl_storage)?;
+    let rate = validator_commission_rate_handle(&validator).get(
+        ctx.wl_storage,
+        epoch,
+        &params,
+    )?;
+    let max_change =
+        read_validator_max_commission_rate_change(ctx.wl_storage, &validator)?;
+    Ok((rate, max_change))
 }
 
 /// Get the total stake of a validator at the given epoch or current when
@@ -392,6 +437,7 @@ where
 
 /// Find all the validator addresses to whom the given `owner` address has
 /// some delegation in any epoch
+#[allow(dead_code)]
 fn delegations<D, H>(
     ctx: RequestCtx<'_, D, H>,
     owner: Address,
@@ -416,4 +462,15 @@ where
 {
     let slash_handle = validator_slashes_handle(&validator);
     slash_handle.iter(ctx.wl_storage)?.collect()
+}
+
+/// All slashes
+fn slashes<D, H>(
+    ctx: RequestCtx<'_, D, H>,
+) -> storage_api::Result<HashMap<Address, Vec<SlashNew>>>
+where
+    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
+    H: 'static + StorageHasher + Sync,
+{
+    find_all_slashes(ctx.wl_storage)
 }

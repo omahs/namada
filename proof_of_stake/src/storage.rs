@@ -2,7 +2,7 @@
 
 use namada_core::ledger::storage::types::{decode, encode};
 use namada_core::ledger::storage::{self, StorageHasher, WlStorage};
-use namada_core::ledger::storage_api::collections::lazy_map;
+use namada_core::ledger::storage_api::collections::{lazy_map, lazy_vec};
 use namada_core::types::address::Address;
 use namada_core::types::storage::{DbKeySeg, Epoch, Key, KeySeg};
 use namada_core::types::{key, token};
@@ -245,6 +245,29 @@ pub fn is_validator_slashes_key(key: &Key) -> Option<&Address> {
             DbKeySeg::AddressSeg(validator),
         ] if addr == &ADDRESS && prefix == SLASHES_PREFIX => Some(validator),
         _ => None,
+    }
+}
+
+/// NEW: Is storage key for validator's slashes
+pub fn is_validator_slashes_key_new(key: &Key) -> Option<Address> {
+    if key.segments.len() >= 5 {
+        match &key.segments[..] {
+            [
+                DbKeySeg::AddressSeg(addr),
+                DbKeySeg::StringSeg(prefix),
+                DbKeySeg::AddressSeg(validator),
+                DbKeySeg::StringSeg(data),
+                DbKeySeg::StringSeg(_index),
+            ] if addr == &ADDRESS
+                && prefix == SLASHES_PREFIX
+                && data == lazy_vec::DATA_SUBKEY =>
+            {
+                Some(validator.clone())
+            }
+            _ => None,
+        }
+    } else {
+        None
     }
 }
 
