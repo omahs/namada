@@ -749,6 +749,7 @@ where
                 min_confirmations: config.min_confirmations.into(),
                 bridge_contract: config.contracts.bridge.address,
                 governance_contract: config.contracts.governance.address,
+                start_block: 0,
             };
             tracing::debug!(
                 ?config,
