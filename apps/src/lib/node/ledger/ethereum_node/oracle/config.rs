@@ -13,6 +13,8 @@ pub struct Config {
     pub bridge_contract: EthAddress,
     /// The Ethereum address of the current governance contract.
     pub governance_contract: EthAddress,
+    /// The earliest Ethereum block from which events may be processed.
+    pub start_block: u64,
 }
 
 // TODO: this production Default implementation is temporary, there should be no
@@ -25,6 +27,7 @@ impl std::default::Default for Config {
             min_confirmations: unsafe { NonZeroU64::new_unchecked(100) },
             bridge_contract: EthAddress([0; 20]),
             governance_contract: EthAddress([1; 20]),
+            start_block: 0,
         }
     }
 }
