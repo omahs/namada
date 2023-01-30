@@ -325,7 +325,7 @@ mod test_process_proposal {
                 data: Some(
                     SignedTxData {
                         data: Some(new_data),
-                        sigs: sigs
+                        sigs,
                     }
                     .try_to_vec()
                     .expect("Test failed"),

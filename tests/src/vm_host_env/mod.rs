@@ -452,7 +452,10 @@ mod tests {
             assert_eq!(&signed_tx_data.data, data);
             assert!(
                 vp::CTX
-                    .verify_tx_signature(&pk, &signed_tx_data.sigs.get(0).unwrap().sig)
+                    .verify_tx_signature(
+                        &pk,
+                        &signed_tx_data.sigs.get(0).unwrap().sig
+                    )
                     .unwrap()
             );
 
