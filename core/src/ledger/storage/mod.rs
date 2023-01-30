@@ -366,6 +366,12 @@ where
         }
     }
 
+    /// Write to a local key-value pair.
+    pub fn write_local(&mut self) {
+        let write = self.db.batch();
+        self.db.write_local(key, value)
+    }
+
     /// Load the full state at the last committed height, if any. Returns the
     /// Merkle root hash and the height of the committed block.
     pub fn load_last_state(&mut self) -> Result<()> {

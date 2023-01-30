@@ -34,13 +34,14 @@ use namada::ledger::protocol::ShellParams;
 use namada::ledger::storage::traits::{Sha256Hasher, StorageHasher};
 use namada::ledger::storage::write_log::WriteLog;
 use namada::ledger::storage::{DBIter, Storage, DB};
+use namada::ledger::storage_api::StorageWrite;
 use namada::ledger::{pos, protocol};
 use namada::proto::{self, Tx};
 use namada::types::address::{masp, masp_tx_key, Address};
 use namada::types::chain::ChainId;
 use namada::types::ethereum_events::EthereumEvent;
 use namada::types::key::*;
-use namada::types::storage::{BlockHeight, Key, TxIndex};
+use namada::types::storage::{BlockHeight, DbKeySeg, Key, TxIndex};
 use namada::types::transaction::{
     hash_tx, process_tx, verify_decrypted_correctly, AffineCurve, DecryptedTx,
     EllipticCurve, PairingEngine, TxType, WrapperTx,
@@ -369,6 +370,35 @@ impl EthereumOracleChannels {
     }
 }
 
+/// We store some values in storage which are to do with our local node, rather
+/// than any specific chain.
+fn ensure_local_node_values_configured<D, H>(storage: &mut Storage<D, H>)
+where
+    D: DB + for<'iter> DBIter<'iter> + Sync + 'static,
+    H: StorageHasher + Sync + 'static,
+{
+    let key = Key::from(DbKeySeg::StringSeg(
+        "ethereum_oracle_last_processed_block".to_owned(),
+    ));
+    let value: u64 = 1;
+
+    let (has_key, _) = storage.has_key(&key).unwrap();
+    if !has_key {
+        tracing::info!(
+            ?key,
+            ?value,
+            "Writing initial value for local node configuration key"
+        );
+        StorageWrite::write(storage, &key, value).unwrap();
+    } else {
+        tracing::info!(
+            ?key,
+            ?value,
+            "Writing initial value for local node configuration key"
+        );
+    }
+}
+
 impl<D, H> Shell<D, H>
 where
     D: DB + for<'iter> DBIter<'iter> + Sync + 'static,
@@ -400,12 +430,14 @@ where
         // load last state from storage
         let mut storage =
             Storage::open(db_path, chain_id.clone(), native_token, db_cache);
+
         storage
             .load_last_state()
             .map_err(|e| {
                 tracing::error!("Cannot load the last state from the DB {}", e);
             })
             .expect("PersistentStorage cannot be initialized");
+        ensure_local_node_values_configured(&mut storage);
 
         let vp_wasm_cache_dir =
             base_dir.join(chain_id.as_str()).join("vp_wasm_cache");
