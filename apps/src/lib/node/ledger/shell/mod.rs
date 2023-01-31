@@ -1061,6 +1061,7 @@ mod test_utils {
         let tx = Tx::new(
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
+            shell.chain_id.clone(),
         );
         let wrapper = WrapperTx::new(
             Fee {
@@ -1147,6 +1148,7 @@ mod test_mempool_validate {
         let tx = Tx::new(
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
+            shell.chain_id.clone(),
         );
 
         let mut wrapper = WrapperTx::new(
@@ -1162,7 +1164,7 @@ mod test_mempool_validate {
             #[cfg(not(feature = "mainnet"))]
             None,
         )
-        .sign(&keypair)
+        .sign(&keypair, shell.chain_id.clone())
         .expect("Wrapper signing failed");
 
         let unsigned_wrapper = if let Some(Ok(SignedTxData {
@@ -1173,7 +1175,7 @@ mod test_mempool_validate {
             .take()
             .map(|data| SignedTxData::try_from_slice(&data[..]))
         {
-            Tx::new(vec![], Some(data))
+            Tx::new(vec![], Some(data), shell.chain_id.clone())
         } else {
             panic!("Test failed")
         };
@@ -1200,6 +1202,7 @@ mod test_mempool_validate {
         let tx = Tx::new(
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
+            shell.chain_id.clone(),
         );
 
         let mut wrapper = WrapperTx::new(
@@ -1215,7 +1218,7 @@ mod test_mempool_validate {
             #[cfg(not(feature = "mainnet"))]
             None,
         )
-        .sign(&keypair)
+        .sign(&keypair, shell.chain_id.clone())
         .expect("Wrapper signing failed");
 
         let invalid_wrapper = if let Some(Ok(SignedTxData {
@@ -1250,6 +1253,7 @@ mod test_mempool_validate {
                     .try_to_vec()
                     .expect("Test failed"),
                 ),
+                shell.chain_id.clone(),
             )
         } else {
             panic!("Test failed");
@@ -1273,7 +1277,11 @@ mod test_mempool_validate {
         let (shell, _) = TestShell::new();
 
         // Test Raw TxType
-        let tx = Tx::new("wasm_code".as_bytes().to_owned(), None);
+        let tx = Tx::new(
+            "wasm_code".as_bytes().to_owned(),
+            None,
+            shell.chain_id.clone(),
+        );
 
         let result = shell.mempool_validate(
             tx.to_bytes().as_ref(),
@@ -1294,6 +1302,7 @@ mod test_mempool_validate {
         let tx = Tx::new(
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
+            shell.chain_id.clone(),
         );
 
         let wrapper = WrapperTx::new(
@@ -1309,7 +1318,7 @@ mod test_mempool_validate {
             #[cfg(not(feature = "mainnet"))]
             None,
         )
-        .sign(&keypair)
+        .sign(&keypair, shell.chain_id.clone())
         .expect("Wrapper signing failed");
 
         let tx_type = match process_tx(wrapper.clone()).expect("Test failed") {
