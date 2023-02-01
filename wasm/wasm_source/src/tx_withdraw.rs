@@ -23,6 +23,7 @@ fn apply_tx(ctx: &mut Ctx, tx_data: Vec<u8>) -> TxResult {
 mod tests {
     use namada::ledger::pos::{BondId, GenesisValidator, PosParams, PosVP};
     use namada::proto::Tx;
+    use namada::types::chain::ChainId;
     use namada::types::storage::Epoch;
     use namada_tests::log::test;
     use namada_tests::native_vp::pos::init_pos;
@@ -145,7 +146,7 @@ mod tests {
 
         let tx_code = vec![];
         let tx_data = withdraw.try_to_vec().unwrap();
-        let tx = Tx::new(tx_code, Some(tx_data));
+        let tx = Tx::new(tx_code, Some(tx_data), ChainId::default());
         let signed_tx = tx.sign(&key);
         let tx_data = signed_tx.data.unwrap();
 
