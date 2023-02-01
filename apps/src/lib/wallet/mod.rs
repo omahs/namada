@@ -549,7 +549,7 @@ pub fn generate_mnemonic_code(
     use_mnemonic: bool,
 ) -> Result<Option<Mnemonic>, GenKeyError> {
     use_mnemonic
-        .then(|| generate_and_confirm_mnemonic_code())
+        .then(generate_and_confirm_mnemonic_code)
         .transpose()
 }
 

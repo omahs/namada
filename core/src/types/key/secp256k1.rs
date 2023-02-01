@@ -468,8 +468,7 @@ impl super::SigScheme for SigScheme {
         SecretKey(Box::new(libsecp256k1::SecretKey::random(csprng)))
     }
 
-    fn from_seed(_seed: [u8; 32]) -> SecretKey
-    {
+    fn from_seed(_seed: [u8; 32]) -> SecretKey {
         unimplemented!()
     }
 

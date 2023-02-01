@@ -3027,7 +3027,7 @@ pub mod args {
             ))
             .arg(MNEMONIC.def().about(
                 "Use mnemonic code for key generation. Only English wordlist \
-                is supported.",
+                 is supported.",
             ))
         }
     }
