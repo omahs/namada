@@ -767,8 +767,9 @@ pub fn gen_sk_from_seed(scheme: SchemeType, seed: Seed) -> common::SecretKey {
     match scheme {
         SchemeType::Ed25519 => {
             // AK: is that correct? do we need to hash the slice instead?
-            let seed: [u8; 32] = seed.as_bytes().try_into().unwrap();
-            ed25519::SigScheme::from_seed(seed).try_to_sk().unwrap()
+            let mut s: [u8; 32] = Default::default();
+            s.copy_from_slice(&seed.as_bytes()[0..32]);
+            ed25519::SigScheme::from_seed(s).try_to_sk().unwrap()
         }
         _ => unimplemented!(),
     }
