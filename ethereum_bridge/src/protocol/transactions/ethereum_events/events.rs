@@ -74,6 +74,10 @@ where
         if asset != &wrapped_native_erc20 {
             let mut changed =
                 mint_wrapped_erc20s(storage, asset, receiver, amount)?;
+            tracing::info!(
+                "Minted wrapped ERC20s - (receiver - {receiver}, amount - \
+                 {amount})",
+            );
             changed_keys.append(&mut changed)
         } else {
             tracing::warn!(
