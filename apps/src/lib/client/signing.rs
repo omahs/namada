@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use borsh::BorshSerialize;
+use borsh::{BorshSerialize, BorshDeserialize, BorshSchema};
 
 use namada::ledger::parameters::storage as parameter_storage;
 use namada::proto::Tx;
@@ -13,6 +13,7 @@ use namada::types::storage::Epoch;
 use namada::types::token;
 use namada::types::token::Amount;
 use namada::types::transaction::{hash_tx, Fee, WrapperTx, MIN_FEE};
+use serde::{Serialize, Deserialize};
 
 use super::rpc;
 use crate::cli::context::{WalletAddress, WalletKeypair};
@@ -21,6 +22,12 @@ use crate::client::tendermint_rpc_types::TxBroadcastData;
 use crate::facade::tendermint_config::net::Address as TendermintAddress;
 use crate::facade::tendermint_rpc::HttpClient;
 use crate::wallet::Wallet;
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OfflineSignature {
+    pub sig: common::Signature,
+    pub public_key: common::PublicKey
+}
 
 /// Find the public key for the given address and try to load the keypair
 /// for it from the wallet. Panics if the key cannot be found or loaded.
@@ -208,35 +215,41 @@ pub async fn tx_signers(
 /// hashes needed for monitoring the tx on chain.
 ///
 /// If it is a dry run, it is not put in a wrapper, but returned as is.
-pub async fn sign_tx(
-    mut ctx: Context,
-    tx: Tx,
-    args: &args::Tx,
-    default: TxSigningKey,
-    #[cfg(not(feature = "mainnet"))] requires_pow: bool,
-) -> (Context, TxBroadcastData) {
-    let keypair = tx_signer(&mut ctx, args, default).await;
-    let tx = tx.sign(&keypair);
+// pub async fn sign_tx(
+//     mut ctx: Context,
+//     tx: Tx,
+//     args: &args::Tx,
+//     default: TxSigningKey,
+//     #[cfg(not(feature = "mainnet"))] requires_pow: bool,
+// ) -> (Context, TxBroadcastData) {
+//     let keypair = tx_signer(&mut ctx, args, default).await;
+//     let tx = tx.sign(&keypair);
 
-    let epoch = rpc::query_epoch(args::Query {
-        ledger_address: args.ledger_address.clone(),
-    })
-    .await;
-    let broadcast_data = if args.dry_run {
-        TxBroadcastData::DryRun(tx)
-    } else {
-        sign_wrapper(
-            &ctx,
-            args,
-            epoch,
-            tx,
-            &keypair,
-            #[cfg(not(feature = "mainnet"))]
-            requires_pow,
-        )
-        .await
-    };
-    (ctx, broadcast_data)
+//     let epoch = rpc::query_epoch(args::Query {
+//         ledger_address: args.ledger_address.clone(),
+//     })
+//     .await;
+//     let broadcast_data = if args.dry_run {
+//         TxBroadcastData::DryRun(tx)
+//     } else {
+//         sign_wrapper(
+//             &ctx,
+//             args,
+//             epoch,
+//             tx,
+//             &keypair,
+//             #[cfg(not(feature = "mainnet"))]
+//             requires_pow,
+//         )
+//         .await
+//     };
+//     (ctx, broadcast_data)
+// }
+
+pub async fn offline_sign(
+
+) {
+    
 }
 
 pub async fn sign_tx_multisignature(

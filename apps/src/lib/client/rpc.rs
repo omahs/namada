@@ -36,7 +36,7 @@ use namada::ledger::pos::{
 };
 use namada::ledger::queries::{self, RPC};
 use namada::ledger::storage::ConversionState;
-use namada::proto::{SignedTxData, Tx};
+use namada::proto::{SignedTxData, SigningTx, Tx};
 use namada::types::address::{masp, tokens, Address};
 use namada::types::governance::{
     OfflineProposal, OfflineVote, ProposalResult, ProposalVote, TallyResult,
@@ -57,7 +57,7 @@ use namada::types::{address, storage, token};
 use rust_decimal::Decimal;
 use tokio::time::{Duration, Instant};
 
-use crate::cli::{self, args, Context};
+use crate::cli::{self, args, safe_exit, Context};
 use crate::client::tendermint_rpc_types::TxResponse;
 use crate::client::tx::{
     Conversions, PinnedBalanceError, TransactionDelta, TransferDelta,
@@ -69,6 +69,8 @@ use crate::facade::tendermint_rpc::query::Query;
 use crate::facade::tendermint_rpc::{
     Client, HttpClient, Order, SubscriptionClient, WebSocketClient,
 };
+
+use super::signing::{tx_signer, tx_signers, OfflineSignature};
 
 /// Query the status of a given transaction.
 ///
@@ -1370,6 +1372,49 @@ pub async fn query_protocol_parameters(
     println!("{:4}Votes per token: {}", "", pos_params.tm_votes_per_token);
 }
 
+pub async fn sign_tx(
+    mut ctx: Context,
+    args::SignTx {
+        mut tx,
+        data_path,
+        signing_tx,
+    }: args::SignTx,
+) {
+    let data = match (data_path, signing_tx) {
+        (None, Some(data)) => HEXLOWER
+            .decode(data.as_bytes())
+            .expect("SHould be hex decodable."),
+        (Some(path), None) => {
+            let data = fs::read(path.clone()).await.expect(
+                format!("File {} should exist.", path.to_string_lossy())
+                    .as_ref(),
+            );
+            HEXLOWER.decode(&data).expect("SHould be hex decodable.")
+        }
+        (_, _) => {
+            println!("--data-path or --signing-tx required.");
+            safe_exit(1)
+        }
+    };
+
+    let signing_tx =
+        SigningTx::try_from_slice(&data).expect("Tx should be deserialiable.");
+    let keypair =
+        tx_signer(&mut ctx, &tx, super::signing::TxSigningKey::None).await;
+
+    let signature = signing_tx.compute_signature(&keypair);
+    let public_key = keypair.ref_to();
+
+    let offline_signature = OfflineSignature {
+        sig: signature,
+        public_key,
+    };
+
+    let offline_signature_out = File::create("offline_signature.tx").unwrap();
+    serde_json::to_writer_pretty(offline_signature_out, &offline_signature)
+        .expect("Signature should be deserializable.")
+}
+
 /// Query PoS bond(s)
 pub async fn query_bonds(ctx: Context, args: args::QueryBonds) {
     let epoch = query_epoch(args.query.clone()).await;
@@ -1757,9 +1802,9 @@ pub async fn query_bonded_stake(ctx: Context, args: args::QueryBondedStake) {
                     };
                     let is_active = validator_set.active.contains(&weighted);
                     if !is_active {
-                        debug_assert!(
-                            validator_set.inactive.contains(&weighted)
-                        );
+                        debug_assert!(validator_set
+                            .inactive
+                            .contains(&weighted));
                     }
                     println!(
                         "Validator {} is {}, bonded stake: {}",
