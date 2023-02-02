@@ -345,7 +345,6 @@ mod test_process_proposal {
     use namada::proto::SignedTxData;
     use namada::types::hash::Hash;
     use namada::types::key::*;
-    use namada::types::storage::Epoch;
     use namada::types::token::Amount;
     use namada::types::transaction::encrypted::EncryptedTx;
     use namada::types::transaction::protocol::ProtocolTxType;
@@ -368,6 +367,7 @@ mod test_process_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
         let wrapper = WrapperTx::new(
             Fee {
@@ -375,7 +375,6 @@ mod test_process_proposal {
                 token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
-            Epoch(0),
             0.into(),
             tx,
             Default::default(),
@@ -386,6 +385,7 @@ mod test_process_proposal {
             vec![],
             Some(TxType::Wrapper(wrapper).try_to_vec().expect("Test failed")),
             shell.chain_id.clone(),
+            None,
         )
         .to_bytes();
         #[allow(clippy::redundant_clone)]
@@ -418,6 +418,7 @@ mod test_process_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
         let timestamp = tx.timestamp;
         let mut wrapper = WrapperTx::new(
@@ -426,14 +427,13 @@ mod test_process_proposal {
                 token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
-            Epoch(0),
             0.into(),
             tx,
             Default::default(),
             #[cfg(not(feature = "mainnet"))]
             None,
         )
-        .sign(&keypair, shell.chain_id.clone())
+        .sign(&keypair, shell.chain_id.clone(), None)
         .expect("Test failed");
         let new_tx = if let Some(Ok(SignedTxData {
             data: Some(data),
@@ -469,6 +469,7 @@ mod test_process_proposal {
                 ),
                 timestamp,
                 chain_id: shell.chain_id.clone(),
+                expiration: None,
             }
         } else {
             panic!("Test failed");
@@ -506,6 +507,7 @@ mod test_process_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
         let wrapper = WrapperTx::new(
             Fee {
@@ -513,14 +515,13 @@ mod test_process_proposal {
                 token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
-            Epoch(0),
             0.into(),
             tx,
             Default::default(),
             #[cfg(not(feature = "mainnet"))]
             None,
         )
-        .sign(&keypair, shell.chain_id.clone())
+        .sign(&keypair, shell.chain_id.clone(), None)
         .expect("Test failed");
         let request = ProcessProposal {
             txs: vec![wrapper.to_bytes()],
@@ -565,6 +566,7 @@ mod test_process_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
         let wrapper = WrapperTx::new(
             Fee {
@@ -572,14 +574,13 @@ mod test_process_proposal {
                 token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
-            Epoch(0),
             0.into(),
             tx,
             Default::default(),
             #[cfg(not(feature = "mainnet"))]
             None,
         )
-        .sign(&keypair, shell.chain_id.clone())
+        .sign(&keypair, shell.chain_id.clone(), None)
         .expect("Test failed");
 
         let request = ProcessProposal {
@@ -616,6 +617,7 @@ mod test_process_proposal {
                 "wasm_code".as_bytes().to_owned(),
                 Some(format!("transaction data: {}", i).as_bytes().to_owned()),
                 shell.chain_id.clone(),
+                None,
             );
             let wrapper = WrapperTx::new(
                 Fee {
@@ -623,7 +625,6 @@ mod test_process_proposal {
                     token: shell.wl_storage.storage.native_token.clone(),
                 },
                 &keypair,
-                Epoch(0),
                 0.into(),
                 tx.clone(),
                 Default::default(),
@@ -690,6 +691,7 @@ mod test_process_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
         let wrapper = WrapperTx::new(
             Fee {
@@ -697,7 +699,6 @@ mod test_process_proposal {
                 token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
-            Epoch(0),
             0.into(),
             tx,
             Default::default(),
@@ -753,6 +754,7 @@ mod test_process_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
         let mut wrapper = WrapperTx::new(
             Fee {
@@ -760,7 +762,6 @@ mod test_process_proposal {
                 token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
-            Epoch(0),
             0.into(),
             tx,
             Default::default(),
@@ -816,7 +817,6 @@ mod test_process_proposal {
                 token: shell.wl_storage.storage.native_token.clone(),
             },
             pk: keypair.ref_to(),
-            epoch: Epoch(0),
             gas_limit: 0.into(),
             inner_tx,
             tx_hash: hash_tx(&tx),
@@ -856,6 +856,7 @@ mod test_process_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
 
         let mut tx = Tx::from(TxType::Decrypted(DecryptedTx::Decrypted {
@@ -895,6 +896,7 @@ mod test_process_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
         let mut tx = Tx::from(TxType::Raw(tx));
         tx.chain_id = shell.chain_id.clone();
@@ -932,6 +934,7 @@ mod test_process_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
         let wrapper = WrapperTx::new(
             Fee {
@@ -939,7 +942,6 @@ mod test_process_proposal {
                 token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
-            Epoch(0),
             0.into(),
             tx,
             Default::default(),
@@ -947,7 +949,7 @@ mod test_process_proposal {
             None,
         );
         let signed = wrapper
-            .sign(&keypair, shell.chain_id.clone())
+            .sign(&keypair, shell.chain_id.clone(), None)
             .expect("Test failed");
 
         // Write wrapper hash to storage
@@ -1005,6 +1007,7 @@ mod test_process_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
         let wrapper = WrapperTx::new(
             Fee {
@@ -1012,7 +1015,6 @@ mod test_process_proposal {
                 token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
-            Epoch(0),
             0.into(),
             tx,
             Default::default(),
@@ -1020,7 +1022,7 @@ mod test_process_proposal {
             None,
         );
         let signed = wrapper
-            .sign(&keypair, shell.chain_id.clone())
+            .sign(&keypair, shell.chain_id.clone(), None)
             .expect("Test failed");
 
         // Run validation
@@ -1062,6 +1064,7 @@ mod test_process_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
         let wrapper = WrapperTx::new(
             Fee {
@@ -1069,7 +1072,6 @@ mod test_process_proposal {
                 token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
-            Epoch(0),
             0.into(),
             tx,
             Default::default(),
@@ -1078,7 +1080,7 @@ mod test_process_proposal {
         );
         let inner_unsigned_hash = wrapper.tx_hash.clone();
         let signed = wrapper
-            .sign(&keypair, shell.chain_id.clone())
+            .sign(&keypair, shell.chain_id.clone(), None)
             .expect("Test failed");
 
         // Write inner hash to storage
@@ -1147,6 +1149,7 @@ mod test_process_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
         let wrapper = WrapperTx::new(
             Fee {
@@ -1154,7 +1157,6 @@ mod test_process_proposal {
                 token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
-            Epoch(0),
             0.into(),
             tx.clone(),
             Default::default(),
@@ -1163,7 +1165,7 @@ mod test_process_proposal {
         );
         let inner_unsigned_hash = wrapper.tx_hash.clone();
         let signed = wrapper
-            .sign(&keypair, shell.chain_id.clone())
+            .sign(&keypair, shell.chain_id.clone(), None)
             .expect("Test failed");
 
         let new_wrapper = WrapperTx::new(
@@ -1172,7 +1174,6 @@ mod test_process_proposal {
                 token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair_2,
-            Epoch(0),
             0.into(),
             tx,
             Default::default(),
@@ -1180,7 +1181,7 @@ mod test_process_proposal {
             None,
         );
         let new_signed = new_wrapper
-            .sign(&keypair, shell.chain_id.clone())
+            .sign(&keypair, shell.chain_id.clone(), None)
             .expect("Test failed");
 
         // Run validation
@@ -1218,6 +1219,7 @@ mod test_process_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
         let wrapper = WrapperTx::new(
             Fee {
@@ -1225,7 +1227,6 @@ mod test_process_proposal {
                 token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
-            Epoch(0),
             0.into(),
             tx.clone(),
             Default::default(),
@@ -1234,7 +1235,7 @@ mod test_process_proposal {
         );
         let wrong_chain_id = ChainId("Wrong chain id".to_string());
         let signed = wrapper
-            .sign(&keypair, wrong_chain_id.clone())
+            .sign(&keypair, wrong_chain_id.clone(), None)
             .expect("Test failed");
 
         let protocol_tx = ProtocolTxType::EthereumStateUpdate(tx).sign(
@@ -1247,6 +1248,7 @@ mod test_process_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("new transaction data".as_bytes().to_owned()),
             wrong_chain_id.clone(),
+            None,
         );
         let decrypted: Tx = DecryptedTx::Decrypted {
             tx: tx.clone(),
@@ -1260,7 +1262,6 @@ mod test_process_proposal {
                 token: shell.wl_storage.storage.native_token.clone(),
             },
             &keypair,
-            Epoch(0),
             0.into(),
             tx,
             Default::default(),

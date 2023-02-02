@@ -177,7 +177,6 @@ pub(super) mod record {
 #[cfg(test)]
 mod test_prepare_proposal {
     use borsh::BorshSerialize;
-    use namada::types::storage::Epoch;
     use namada::types::transaction::{Fee, WrapperTx};
 
     use super::*;
@@ -193,6 +192,7 @@ mod test_prepare_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction_data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
         let req = RequestPrepareProposal {
             txs: vec![tx.to_bytes()],
@@ -219,6 +219,7 @@ mod test_prepare_proposal {
             "wasm_code".as_bytes().to_owned(),
             Some("transaction_data".as_bytes().to_owned()),
             shell.chain_id.clone(),
+            None,
         );
         // an unsigned wrapper will cause an error in processing
         let wrapper = Tx::new(
@@ -230,7 +231,6 @@ mod test_prepare_proposal {
                         token: shell.wl_storage.storage.native_token.clone(),
                     },
                     &keypair,
-                    Epoch(0),
                     0.into(),
                     tx,
                     Default::default(),
@@ -241,6 +241,7 @@ mod test_prepare_proposal {
                 .expect("Test failed"),
             ),
             shell.chain_id.clone(),
+            None,
         )
         .to_bytes();
         #[allow(clippy::redundant_clone)]
@@ -280,6 +281,7 @@ mod test_prepare_proposal {
                 "wasm_code".as_bytes().to_owned(),
                 Some(format!("transaction data: {}", i).as_bytes().to_owned()),
                 shell.chain_id.clone(),
+                None,
             );
             expected_decrypted.push(Tx::from(DecryptedTx::Decrypted {
                 tx: tx.clone(),
@@ -292,7 +294,6 @@ mod test_prepare_proposal {
                     token: shell.wl_storage.storage.native_token.clone(),
                 },
                 &keypair,
-                Epoch(0),
                 0.into(),
                 tx,
                 Default::default(),
@@ -300,7 +301,7 @@ mod test_prepare_proposal {
                 None,
             );
             let wrapper = wrapper_tx
-                .sign(&keypair, shell.chain_id.clone())
+                .sign(&keypair, shell.chain_id.clone(), None)
                 .expect("Test failed");
             shell.enqueue_tx(wrapper_tx);
             expected_wrapper.push(wrapper.clone());

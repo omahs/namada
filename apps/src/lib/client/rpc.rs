@@ -225,7 +225,7 @@ pub async fn query_tx_deltas(
                     let mut transfer = None;
                     extract_payload(tx, &mut wrapper, &mut transfer);
                     // Epoch data is not needed for transparent transactions
-                    let epoch = wrapper.map(|x| x.epoch).unwrap_or_default();
+                    let epoch = Epoch::default();
                     if let Some(transfer) = transfer {
                         // Skip MASP addresses as they are already handled by
                         // ShieldedContext
@@ -1755,9 +1755,9 @@ pub async fn query_bonded_stake(ctx: Context, args: args::QueryBondedStake) {
                     };
                     let is_active = validator_set.active.contains(&weighted);
                     if !is_active {
-                        debug_assert!(
-                            validator_set.inactive.contains(&weighted)
-                        );
+                        debug_assert!(validator_set
+                            .inactive
+                            .contains(&weighted));
                     }
                     println!(
                         "Validator {} is {}, bonded stake: {}",

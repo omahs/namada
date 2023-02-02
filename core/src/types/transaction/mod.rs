@@ -354,6 +354,7 @@ pub mod tx_types {
         use super::*;
         use crate::types::address::nam;
         use crate::types::storage::Epoch;
+        use crate::types::time::DateTimeUtc;
 
         fn gen_keypair() -> common::SecretKey {
             use rand::prelude::ThreadRng;
@@ -454,14 +455,13 @@ pub mod tx_types {
                     token: nam(),
                 },
                 &keypair,
-                Epoch(0),
                 0.into(),
                 tx.clone(),
                 Default::default(),
                 #[cfg(not(feature = "mainnet"))]
                 None,
             )
-            .sign(&keypair, tx.chain_id.clone())
+            .sign(&keypair, tx.chain_id.clone(), Some(DateTimeUtc::now()))
             .expect("Test failed");
 
             match process_tx(wrapper).expect("Test failed") {
@@ -493,7 +493,6 @@ pub mod tx_types {
                     token: nam(),
                 },
                 &keypair,
-                Epoch(0),
                 0.into(),
                 tx,
                 Default::default(),
