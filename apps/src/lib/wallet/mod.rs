@@ -6,11 +6,11 @@ mod store;
 
 use std::collections::HashMap;
 use std::fmt::Display;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::{env, fs};
 
-use ark_serialize::Write;
 use bip39::{Language, Mnemonic, MnemonicType, Seed};
 use borsh::{BorshDeserialize, BorshSerialize};
 use masp_primitives::zip32::ExtendedFullViewingKey;
