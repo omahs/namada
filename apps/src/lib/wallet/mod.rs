@@ -536,7 +536,7 @@ fn generate_and_confirm_mnemonic_code() -> Result<Mnemonic, GenKeyError> {
 
     // TODO print mnemonic to the user in a different terminal
     // execute!(std::io::stdout(), EnterAlternateScreen)?;
-    println!("{}", "Safely store your 24 words mnemonic.");
+    println!("Safely store your 24 words mnemonic.");
     println!("{}", mnemonic.clone().into_phrase());
     // get_user_input(format!("{}", "Press enter when you are done."));
     // execute!(std::io::stdout(), LeaveAlternateScreen)?;
