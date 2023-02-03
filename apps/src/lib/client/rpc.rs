@@ -57,6 +57,7 @@ use namada::types::{address, storage, token};
 use rust_decimal::Decimal;
 use tokio::time::{Duration, Instant};
 
+use super::signing::{tx_signer, OfflineSignature};
 use crate::cli::{self, args, safe_exit, Context};
 use crate::client::tendermint_rpc_types::TxResponse;
 use crate::client::tx::{
@@ -69,8 +70,6 @@ use crate::facade::tendermint_rpc::query::Query;
 use crate::facade::tendermint_rpc::{
     Client, HttpClient, Order, SubscriptionClient, WebSocketClient,
 };
-
-use super::signing::{tx_signer, OfflineSignature};
 
 /// Query the status of a given transaction.
 ///
@@ -1385,7 +1384,9 @@ pub async fn sign_tx(
             .decode(data.as_bytes())
             .expect("SHould be hex decodable."),
         (Some(path), None) => {
-            let data = fs::read(path.clone()).await.unwrap_or_else(|_| panic!("File {} should exist.", path.to_string_lossy()));
+            let data = fs::read(path.clone()).await.unwrap_or_else(|_| {
+                panic!("File {} should exist.", path.to_string_lossy())
+            });
             HEXLOWER.decode(&data).expect("SHould be hex decodable.")
         }
         (_, _) => {
@@ -1799,9 +1800,9 @@ pub async fn query_bonded_stake(ctx: Context, args: args::QueryBondedStake) {
                     };
                     let is_active = validator_set.active.contains(&weighted);
                     if !is_active {
-                        debug_assert!(validator_set
-                            .inactive
-                            .contains(&weighted));
+                        debug_assert!(
+                            validator_set.inactive.contains(&weighted)
+                        );
                     }
                     println!(
                         "Validator {} is {}, bonded stake: {}",
