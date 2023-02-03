@@ -646,20 +646,17 @@ pub fn read_password(prompt_msg: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use bip39::{MnemonicType, Seed};
+    use bip39::{MnemonicType};
 
     use crate::wallet::generate_and_confirm_mnemonic_code;
 
     #[test]
     fn test_generate_mnemonic() {
         const MNEMONIC_TYPE: MnemonicType = MnemonicType::Words12;
-        const PASSWD: &str = "secret";
         let mnemonic1 =
             generate_and_confirm_mnemonic_code(MNEMONIC_TYPE).unwrap();
-        let seed1 = Seed::new(&mnemonic1, PASSWD);
         let mnemonic2 =
             generate_and_confirm_mnemonic_code(MNEMONIC_TYPE).unwrap();
-        let seed2 = Seed::new(&mnemonic2, PASSWD);
-        assert_ne!(seed1.as_bytes(), seed2.as_bytes());
+        assert_ne!(mnemonic1.into_phrase(), mnemonic2.into_phrase());
     }
 }
