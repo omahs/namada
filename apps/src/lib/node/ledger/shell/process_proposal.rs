@@ -115,6 +115,7 @@ where
         };
 
         let tx_chain_id = tx.chain_id.clone();
+        let tx_expiration = tx.expiration;
 
         // TODO: This should not be hardcoded
         let privkey = <EllipticCurve as PairingEngine>::G2Affine::prime_subgroup_generator();
@@ -134,6 +135,7 @@ where
                         .into(),
                 },
                 TxType::Protocol(_) => {
+                    // Tx chain id
                     if tx_chain_id != self.chain_id {
                         return TxResult {
                             code: ErrorCodes::InvalidChainId.into(),
@@ -143,6 +145,24 @@ where
                                 self.chain_id, tx_chain_id
                             ),
                         };
+                    }
+
+                    // Tx expiration
+                    if let Some(exp) = tx_expiration {
+                        let last_block_timestamp = self
+                            .wl_storage
+                            .storage
+                            .get_block_timestamp()
+                            .expect("Failed to retrieve last block timestamp");
+                        if exp > last_block_timestamp {
+                            return TxResult {
+                                code: ErrorCodes::ExpiredTx.into(),
+                                info: format!(
+                    "Tx expired at {:#?}, last committed block time: {:#?}",
+                    exp, last_block_timestamp
+                ),
+                            };
+                        }
                     }
                     TxResult {
                         code: ErrorCodes::InvalidTx.into(),
@@ -170,6 +190,7 @@ where
                                     has_valid_pow: _,
                                 } = tx
                                 {
+                                    // Tx chain id
                                     if tx.chain_id != self.chain_id {
                                         return TxResult {
                                             code: ErrorCodes::InvalidChainId
@@ -180,6 +201,25 @@ where
                                                 self.chain_id, tx.chain_id
                                             ),
                                         };
+                                    }
+
+                                    // Tx expiration
+                                    if let Some(exp) = tx.expiration {
+                                        let last_block_timestamp = self
+                            .wl_storage
+                            .storage
+                            .get_block_timestamp()
+                            .expect("Failed to retrieve last block timestamp");
+                                        if exp > last_block_timestamp {
+                                            return TxResult {
+                                                code: ErrorCodes::ExpiredTx
+                                                    .into(),
+                                                info: format!(
+                    "Tx expired at {:#?}, last committed block time: {:#?}",
+                    exp, last_block_timestamp
+                ),
+                                            };
+                                        }
                                     }
                                 }
 
@@ -208,7 +248,7 @@ where
                     }
                 }
                 TxType::Wrapper(wrapper) => {
-                    // ChainId check
+                    // Tx chain id
                     if tx_chain_id != self.chain_id {
                         return TxResult {
                             code: ErrorCodes::InvalidChainId.into(),
@@ -218,6 +258,24 @@ where
                                 self.chain_id, tx_chain_id
                             ),
                         };
+                    }
+
+                    // Tx expiration
+                    if let Some(exp) = tx_expiration {
+                        let last_block_timestamp = self
+                            .wl_storage
+                            .storage
+                            .get_block_timestamp()
+                            .expect("Failed to retrieve last block timestamp");
+                        if exp > last_block_timestamp {
+                            return TxResult {
+                                code: ErrorCodes::ExpiredTx.into(),
+                                info: format!(
+                    "Tx expired at {:#?}, last committed block time: {:#?}",
+                    exp, last_block_timestamp
+                ),
+                            };
+                        }
                     }
 
                     // validate the ciphertext via Ferveo

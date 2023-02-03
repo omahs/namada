@@ -129,6 +129,7 @@ pub enum ErrorCodes {
     Undecryptable = 6,
     ReplayTx = 7,
     InvalidChainId = 8,
+    ExpiredTx = 9,
 }
 
 impl From<ErrorCodes> for u32 {
@@ -609,6 +610,24 @@ where
                 self.chain_id, tx.chain_id
             );
             return response;
+        }
+
+        // Tx expiration
+        if let Some(exp) = tx.expiration {
+            let last_block_timestamp = self
+                .wl_storage
+                .storage
+                .get_block_timestamp()
+                .expect("Failed to retrieve last block timestamp");
+
+            if exp > last_block_timestamp {
+                response.code = ErrorCodes::ExpiredTx.into();
+                response.log = format!(
+                    "Tx expired at {:#?}, last committed block time: {:#?}",
+                    exp, last_block_timestamp
+                );
+                return response;
+            }
         }
 
         // Tx signature check
@@ -1144,7 +1163,6 @@ mod test_utils {
 #[cfg(test)]
 mod test_mempool_validate {
     use namada::proto::SignedTxData;
-    use namada::types::storage::Epoch;
     use namada::types::transaction::{Fee, WrapperTx};
 
     use super::test_utils::TestShell;
