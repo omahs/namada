@@ -24,7 +24,8 @@ use crate::e2e::helpers::{
 };
 use crate::e2e::setup;
 use crate::e2e::setup::constants::{
-    wasm_abs_path, ALBERT, ALBERT_KEY, BERTHA, NAM, TX_WRITE_STORAGE_KEY_WASM,
+    wasm_abs_path, ALBERT, ALBERT_KEY, BERTHA, BERTHA_KEY, NAM,
+    TX_WRITE_STORAGE_KEY_WASM,
 };
 use crate::e2e::setup::{Bin, Who};
 use crate::{run, run_as};
@@ -527,6 +528,271 @@ async fn test_wdai_transfer_implicit_to_implicit() -> Result<()> {
         &bertha_addr,
     )?;
     assert_eq!(bertha_wdai_balance, second_transfer_amount);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_wdai_transfer_implicit_to_established() -> Result<()> {
+    let (test, bg_ledger) = setup_single_validator_test()?;
+
+    let initial_transfer_amount = token::Amount::from(10_000_000);
+    let albert_addr = find_address(&test, ALBERT)?;
+
+    let dai_transfer = TransferToNamada {
+        amount: initial_transfer_amount.to_owned(),
+        asset: DAI_ERC20_ETH_ADDRESS,
+        receiver: albert_addr.to_owned(),
+    };
+    let _bg_ledger = send_transfer(bg_ledger, dai_transfer).await?;
+
+    let albert_wdai_balance = find_wrapped_erc20_balance(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &albert_addr,
+    )?;
+    assert_eq!(albert_wdai_balance, initial_transfer_amount);
+
+    // create an established account that Bertha controls
+    let bertha_established_alias = "bertha-established";
+    init_established_account(
+        &test,
+        &Who::Validator(0),
+        BERTHA,
+        BERTHA_KEY,
+        bertha_established_alias,
+    )?;
+    let bertha_established_addr =
+        find_address(&test, bertha_established_alias)?;
+
+    // attempt a transfer from Albert to Bertha that should succeed, as it's
+    // signed with Albert's key
+    let second_transfer_amount = token::Amount::from(10_000);
+    let mut cmd = attempt_wrapped_erc20_transfer(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &albert_addr.to_string(),
+        &bertha_established_addr.to_string(),
+        &albert_addr.to_string(),
+        &second_transfer_amount,
+    )?;
+    cmd.exp_string("Transaction is valid.")?;
+    cmd.exp_string("Transaction is valid.")?;
+    cmd.assert_success();
+
+    let albert_wdai_balance = find_wrapped_erc20_balance(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &albert_addr,
+    )?;
+    assert_eq!(
+        albert_wdai_balance,
+        initial_transfer_amount - second_transfer_amount
+    );
+
+    let bertha_established_wdai_balance = find_wrapped_erc20_balance(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &bertha_established_addr,
+    )?;
+    assert_eq!(bertha_established_wdai_balance, second_transfer_amount);
+
+    // attempt a transfer from Albert to Bertha that should fail, as it's not
+    // signed with Albert's key
+    let mut cmd = attempt_wrapped_erc20_transfer(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &albert_addr.to_string(),
+        &bertha_established_addr.to_string(),
+        &bertha_established_addr.to_string(),
+        &second_transfer_amount,
+    )?;
+    cmd.exp_string("Transaction is valid.")?;
+    cmd.exp_string("Transaction is invalid.")?;
+    cmd.assert_success();
+
+    // check balances are unchanged after an unsuccessful transfer
+    let albert_wdai_balance = find_wrapped_erc20_balance(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &albert_addr,
+    )?;
+    assert_eq!(
+        albert_wdai_balance,
+        initial_transfer_amount - second_transfer_amount
+    );
+
+    let bertha_established_wdai_balance = find_wrapped_erc20_balance(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &bertha_established_addr,
+    )?;
+    assert_eq!(bertha_established_wdai_balance, second_transfer_amount);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_wdai_transfer_established_to_implicit() -> Result<()> {
+    let (test, bg_ledger) = setup_single_validator_test()?;
+
+    // create an established account that Albert controls
+    let albert_established_alias = "albert-established";
+    init_established_account(
+        &test,
+        &Who::Validator(0),
+        ALBERT,
+        ALBERT_KEY,
+        albert_established_alias,
+    )?;
+    let albert_established_addr =
+        find_address(&test, albert_established_alias)?;
+
+    let initial_transfer_amount = token::Amount::from(10_000_000);
+    let dai_transfer = TransferToNamada {
+        amount: initial_transfer_amount.to_owned(),
+        asset: DAI_ERC20_ETH_ADDRESS,
+        receiver: albert_established_addr.to_owned(),
+    };
+    let _bg_ledger = send_transfer(bg_ledger, dai_transfer).await?;
+
+    let albert_established_wdai_balance = find_wrapped_erc20_balance(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &albert_established_addr,
+    )?;
+    assert_eq!(albert_established_wdai_balance, initial_transfer_amount);
+
+    let bertha_addr = find_address(&test, BERTHA)?;
+
+    // attempt a transfer from Albert to Bertha that should succeed, as it's
+    // signed with Albert's key
+    let second_transfer_amount = token::Amount::from(10_000);
+    let mut cmd = attempt_wrapped_erc20_transfer(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &albert_established_addr.to_string(),
+        &bertha_addr.to_string(),
+        &albert_established_addr.to_string(),
+        &second_transfer_amount,
+    )?;
+    cmd.exp_string("Transaction is valid.")?;
+    cmd.exp_string("Transaction is valid.")?;
+    cmd.assert_success();
+
+    let albert_established_wdai_balance = find_wrapped_erc20_balance(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &albert_established_addr,
+    )?;
+    assert_eq!(
+        albert_established_wdai_balance,
+        initial_transfer_amount - second_transfer_amount
+    );
+
+    let bertha_wdai_balance = find_wrapped_erc20_balance(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &bertha_addr,
+    )?;
+    assert_eq!(bertha_wdai_balance, second_transfer_amount);
+
+    // TODO: invalid transfer
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_wdai_transfer_established_to_established() -> Result<()> {
+    let (test, bg_ledger) = setup_single_validator_test()?;
+
+    // create an established account that Albert controls
+    let albert_established_alias = "albert-established";
+    init_established_account(
+        &test,
+        &Who::Validator(0),
+        ALBERT,
+        ALBERT_KEY,
+        albert_established_alias,
+    )?;
+    let albert_established_addr =
+        find_address(&test, albert_established_alias)?;
+
+    let initial_transfer_amount = token::Amount::from(10_000_000);
+    let dai_transfer = TransferToNamada {
+        amount: initial_transfer_amount.to_owned(),
+        asset: DAI_ERC20_ETH_ADDRESS,
+        receiver: albert_established_addr.to_owned(),
+    };
+    let _bg_ledger = send_transfer(bg_ledger, dai_transfer).await?;
+
+    let albert_established_wdai_balance = find_wrapped_erc20_balance(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &albert_established_addr,
+    )?;
+    assert_eq!(albert_established_wdai_balance, initial_transfer_amount);
+
+    // create an established account that Bertha controls
+    let bertha_established_alias = "bertha-established";
+    init_established_account(
+        &test,
+        &Who::Validator(0),
+        BERTHA,
+        BERTHA_KEY,
+        bertha_established_alias,
+    )?;
+    let bertha_established_addr =
+        find_address(&test, bertha_established_alias)?;
+
+    // attempt a transfer from Albert to Bertha that should succeed, as it's
+    // signed with Albert's key
+    let second_transfer_amount = token::Amount::from(10_000);
+    let mut cmd = attempt_wrapped_erc20_transfer(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &albert_established_addr.to_string(),
+        &bertha_established_addr.to_string(),
+        &albert_established_addr.to_string(),
+        &second_transfer_amount,
+    )?;
+    cmd.exp_string("Transaction is valid.")?;
+    cmd.exp_string("Transaction is valid.")?;
+    cmd.assert_success();
+
+    let albert_established_wdai_balance = find_wrapped_erc20_balance(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &albert_established_addr,
+    )?;
+    assert_eq!(
+        albert_established_wdai_balance,
+        initial_transfer_amount - second_transfer_amount
+    );
+
+    let bertha_established_wdai_balance = find_wrapped_erc20_balance(
+        &test,
+        &Who::Validator(0),
+        &DAI_ERC20_ETH_ADDRESS,
+        &bertha_established_addr,
+    )?;
+    assert_eq!(bertha_established_wdai_balance, second_transfer_amount);
+
+    // TODO: invalid transfer
 
     Ok(())
 }
