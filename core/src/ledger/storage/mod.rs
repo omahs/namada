@@ -26,7 +26,7 @@ use rayon::iter::{
 #[cfg(feature = "wasm-runtime")]
 use rayon::prelude::ParallelSlice;
 use thiserror::Error;
-pub use traits::{Sha256Hasher, StorageHasher};
+pub use traits::{DummyHasher, KeccakHasher, Sha256Hasher, StorageHasher};
 
 use crate::ledger::eth_bridge::storage::bridge_pool::is_pending_transfer_key;
 use crate::ledger::gas::MIN_STORAGE_GAS;
@@ -1009,7 +1009,15 @@ where
         value: impl AsRef<[u8]>,
     ) -> Result<i64> {
         let value = value.as_ref();
-        self.block.tree.update(key, value)?;
+        if is_pending_transfer_key(key) {
+            // The tree of the bright pool stores the current height for the
+            // pending transfer
+            let height =
+                self.block.height.try_to_vec().expect("Encoding failed");
+            self.block.tree.update(key, height)?;
+        } else {
+            self.block.tree.update(key, value)?;
+        }
         self.db
             .batch_write_subspace_val(batch, self.block.height, key, value)
     }
