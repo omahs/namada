@@ -144,6 +144,10 @@ pub struct CommissionPair {
 /// Epoched rewards products
 pub type RewardsProducts = LazyMap<Epoch, Decimal>;
 
+/// Consensus validator rewards accumulator (for tracking the fractional block
+/// rewards owed over the course of an epoch)
+pub type RewardsAccumulator = LazyMap<Address, Decimal>;
+
 // --------------------------------------------------------------------------------------------
 
 /// A genesis validator definition.

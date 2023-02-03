@@ -2,13 +2,12 @@
 
 use namada::ledger::inflation::{self, RewardsController};
 use namada::ledger::parameters::storage as params_storage;
-use namada::ledger::pos::namada_proof_of_stake;
 use namada::ledger::pos::types::{
     decimal_mult_u64, into_tm_voting_power, VoteInfo,
 };
 use namada::ledger::pos::{
-    consensus_validator_set_accumulator_key, staking_token_address,
-    ADDRESS as POS_ADDRESS,
+    consensus_validator_rewards_accumulator_key, namada_proof_of_stake,
+    staking_token_address, ADDRESS as POS_ADDRESS,
 };
 use namada::ledger::protocol;
 use namada::ledger::storage::write_log::StorageModification;
@@ -65,9 +64,10 @@ where
         // Begin the new block and check if a new epoch has begun
         let (height, new_epoch) =
             self.update_state(req.header, req.hash, req.byzantine_validators);
-        let (current_epoch, _gas) = self.storage.get_current_epoch();
-        let update_for_tendermint = self.storage.epoch_update_tracker.0
-            && self.storage.epoch_update_tracker.1 == 2;
+        let (current_epoch, _gas) = self.wl_storage.storage.get_current_epoch();
+        let update_for_tendermint =
+            self.wl_storage.storage.epoch_update_tracker.0
+                && self.wl_storage.storage.epoch_update_tracker.1 == 2;
 
         println!(
             "BLOCK HEIGHT {} AND EPOCH {}, NEW EPOCH = {}",
@@ -387,7 +387,7 @@ where
 
         // Read the block proposer of the previously committed block in storage
         // (n-1 if we are in the process of finalizing n right now).
-        match self.storage.read_last_block_proposer_address() {
+        match self.wl_storage.storage.read_last_block_proposer_address() {
             Some(proposer_address) => {
                 println!("FOUND LAST BLOCK PROPOSER");
                 if new_epoch {
@@ -401,38 +401,44 @@ where
                     // TODO: watch out because this is likely not using the
                     // proper block proposer address
                     println!("LOGGING BLOCK REWARDS (NOT NEW EPOCH)");
-                    self.storage
-                        .log_block_rewards(
-                            current_epoch,
-                            &proposer_address,
-                            &req.votes,
-                        )
-                        .unwrap();
+                    namada_proof_of_stake::log_block_rewards(
+                        &mut self.wl_storage,
+                        current_epoch,
+                        &proposer_address,
+                        &req.votes,
+                    )
+                    .unwrap();
                 }
                 #[cfg(feature = "abcipp")]
                 {
+                    // TODO: better error handling that converts
+                    // storage_api::Error -> shell::Error
                     let tm_raw_hash_string =
                         tm_raw_hash_to_string(req.proposer_address);
-                    let native_proposer_address = self
-                        .storage
-                        .read_validator_address_raw_hash(tm_raw_hash_string)
+                    let native_proposer_address =
+                        namada_proof_of_stake::find_validator_by_raw_hash(
+                            &self.wl_storage,
+                            tm_raw_hash_string,
+                        )
+                        .unwrap()
                         .expect(
                             "Unable to find native validator address of block \
                              proposer from tendermint raw hash",
                         );
-                    self.storage.write_last_block_proposer_address(
-                        &native_proposer_address,
+                    namada_proof_of_stake::write_last_block_proposer_address(
+                        &mut self.wl_storage,
+                        native_proposer_address,
                     );
                 }
 
                 #[cfg(not(feature = "abcipp"))]
                 {
-                    let cur_proposer = self
-                        .storage
-                        .read_current_block_proposer_address()
+                    let cur_proposer = namada_proof_of_stake::read_current_block_proposer_address(&self.wl_storage)
                         .unwrap();
-                    self.storage
-                        .write_last_block_proposer_address(&cur_proposer);
+                    namada_proof_of_stake::write_last_block_proposer_address(
+                        &mut self.wl_storage,
+                        cur_proposer,
+                    );
                 }
             }
             None => {
@@ -783,7 +789,7 @@ where
 
         // Delete the accumulators from storage
         self.storage
-            .delete(&consensus_validator_set_accumulator_key())
+            .delete(&consensus_validator_rewards_accumulator_key())
             .unwrap();
     }
 }
@@ -798,8 +804,8 @@ mod test_finalize_block {
     use namada::ledger::parameters::EpochDuration;
     use namada::ledger::storage_api;
     use namada::types::governance::ProposalVote;
-//    use data_encoding::HEXUPPER;
-//    use namada::proof_of_stake::btree_set::BTreeSetShims;
+    //    use data_encoding::HEXUPPER;
+    //    use namada::proof_of_stake::btree_set::BTreeSetShims;
     use namada::types::storage::Epoch;
     use namada::types::time::DurationSecs;
     use namada::types::transaction::governance::{

@@ -26,10 +26,9 @@ mod tests;
 use core::fmt::Debug;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::num::TryFromIntError;
-use data_encoding::HEXUPPER;
 
 use borsh::BorshDeserialize;
-use epoched::{DynEpochOffset, EpochOffset, Epoched, EpochedDelta, OffsetPipelineLen};
+use epoched::{EpochOffset, OffsetPipelineLen};
 use namada_core::ledger::storage_api::collections::lazy_map::{
     NestedSubKey, SubKey,
 };
@@ -44,27 +43,28 @@ pub use namada_core::types::storage::Epoch;
 use namada_core::types::token;
 use once_cell::unsync::Lazy;
 use parameters::PosParams;
+use rewards::PosRewardsCalculator;
 use rust_decimal::Decimal;
 use storage::{
-    bonds_for_source_prefix, bonds_prefix, get_validator_address_from_bond,
-    into_tm_voting_power, is_bond_key, is_unbond_key, is_validator_slashes_key,
+    bonds_for_source_prefix, bonds_prefix, current_block_proposer_key,
+    get_validator_address_from_bond, into_tm_voting_power, is_bond_key,
+    is_unbond_key, is_validator_slashes_key, last_block_proposer_key,
     mult_amount, mult_change_to_amount, num_consensus_validators_key,
     params_key, slashes_prefix, unbonds_for_source_prefix, unbonds_prefix,
     validator_address_raw_hash_key, validator_max_commission_rate_change_key,
     BondDetails, BondsAndUnbondsDetail, BondsAndUnbondsDetails,
-    ReverseOrdTokenAmount, UnbondDetails, WeightedValidator,
+    ReverseOrdTokenAmount, RewardsAccumulator, UnbondDetails,
 };
 use thiserror::Error;
 use types::{
-    decimal_mult_i128, decimal_mult_u64, BelowCapacityValidatorSet, BelowCapacityValidatorSets, BondId, Bonds,
-    CommissionRates, ConsensusValidator, ConsensusValidatorSet,
-    ConsensusValidatorSets, GenesisValidator, Position, RewardsProducts, Slash, SlashType,
-    Slashes, TotalDeltas, Unbonds, ValidatorConsensusKeys, ValidatorDeltas,
+    decimal_mult_i128, decimal_mult_u64, BelowCapacityValidatorSet,
+    BelowCapacityValidatorSets, BondId, Bonds, CommissionRates,
+    ConsensusValidator, ConsensusValidatorSet, ConsensusValidatorSets,
+    GenesisValidator, Position, RewardsProducts, Slash, SlashType, Slashes,
+    TotalDeltas, Unbonds, ValidatorConsensusKeys, ValidatorDeltas,
     ValidatorPositionAddresses, ValidatorSetPositions, ValidatorSetUpdate,
-    ValidatorState, ValidatorStates, VoteInfo, WeightedValidator
+    ValidatorState, ValidatorStates, VoteInfo, WeightedValidator,
 };
-
-use crate::types::{decimal_mult_i128, decimal_mult_u64, BondId};
 
 /// Address of the PoS account implemented as a native VP
 pub const ADDRESS: Address = Address::Internal(InternalAddress::PoS);
@@ -76,200 +76,6 @@ pub const SLASH_POOL_ADDRESS: Address =
 /// Address of the staking token (NAM)
 pub fn staking_token_address() -> Address {
     address::nam()
-}
-
-/// IMPORTANT FORMER METHODS OF TRAIT POSBASE.
-pub trait PosBase {
-    /// Read PoS validator's reward products
-    fn read_validator_rewards_products(
-        &self,
-        key: &Address,
-    ) -> Option<RewardsProducts>;
-    /// Read PoS validator's delegation reward products
-    fn read_validator_delegation_rewards_products(
-        &self,
-        key: &Address,
-    ) -> Option<RewardsProducts>;
-    /// Read PoS validator's last known epoch with rewards products
-    fn read_validator_last_known_product_epoch(&self, key: &Address) -> Epoch;
-    /// Read PoS consensus validator's rewards accumulator
-    fn read_consensus_validator_rewards_accumulator(
-        &self,
-    ) -> Option<std::collections::HashMap<Address, Decimal>>;
-    fn read_last_block_proposer_address(&self) -> Option<Address>;
-    /// Read the current block proposer's namada address
-    fn read_current_block_proposer_address(&self) -> Option<Address>;
-
-    /// Write PoS validator's rewards products.
-    fn write_validator_rewards_products(
-        &mut self,
-        key: &Address,
-        value: &RewardsProducts,
-    );
-    /// Write PoS validator's delegation rewards products.
-    fn write_validator_delegation_rewards_products(
-        &mut self,
-        key: &Address,
-        value: &RewardsProducts,
-    );
-    /// Write PoS validator's last known epoch with rewards products
-    fn write_validator_last_known_product_epoch(
-        &mut self,
-        key: &Address,
-        value: &Epoch,
-    );
-    /// Write PoS validator's delegation rewards products.
-    fn write_consensus_validator_rewards_accumulator(
-        &mut self,
-        value: &std::collections::HashMap<Address, Decimal>,
-    );
-    /// Write the last block proposer's namada address
-    fn write_last_block_proposer_address(&mut self, value: &Address);
-    /// Write the current block proposer's namada address
-    fn write_current_block_proposer_address(&mut self, value: &Address);
-
-    /// Tally a running sum of the fracton of rewards owed to each validator in
-    /// the consensus set. This is used to keep track of the rewards due to each
-    /// consensus validator over the lifetime of an epoch.
-    fn log_block_rewards(
-        &mut self,
-        epoch: impl Into<Epoch>,
-        proposer_address: &Address,
-        votes: &[VoteInfo],
-    ) -> Result<(), InflationError> {
-        // TODO: all values collected here need to be consistent with the same
-        // block that the voting info corresponds to, which is the
-        // previous block from the current one we are in.
-
-        // The votes correspond to the last committed block (n-1 if we are
-        // finalizing block n)
-
-        let epoch: Epoch = epoch.into();
-        dbg!(&epoch);
-
-        let validator_set = self.read_validator_set();
-        dbg!(&validator_set);
-        let validators = validator_set.get(epoch).unwrap();
-        let pos_params = self.read_pos_params();
-
-        println!(
-            "VALIDATOR SET OF EPOCH {} LAST UPDATE = {}, LEN = {}:",
-            epoch,
-            validator_set.last_update(),
-            validator_set.data.len()
-        );
-        for val in &validators.active {
-            println!("STAKE: {}, ADDRESS: {}", val.bonded_stake, val.address);
-            let ck = self
-                .read_validator_consensus_key(&val.address)
-                .unwrap()
-                .get(epoch)
-                .unwrap()
-                .to_owned();
-            let hash_string1 = tm_consensus_key_raw_hash(&ck);
-            let bytes1 = HEXUPPER.decode(hash_string1.as_bytes()).unwrap();
-            dbg!(bytes1);
-        }
-        dbg!(votes);
-
-        // Get total stake of the consensus validator set
-        // TODO: does this need to account for rewards prodcuts?
-        let total_active_stake = validators.active.iter().fold(
-            0_u64,
-            |sum,
-             WeightedValidator {
-                 bonded_stake,
-                 address: _,
-             }| { sum + *bonded_stake },
-        );
-
-        // Get set of signing validator addresses and the combined stake of
-        // these signers
-        let mut signer_set: HashSet<Address> = HashSet::new();
-        let mut total_signing_stake: u64 = 0;
-        for vote in votes.iter() {
-            if !vote.signed_last_block {
-                continue;
-            }
-            let tm_raw_hash_string =
-                hex::encode_upper(vote.validator_address.clone());
-            let native_address = self
-                .read_validator_address_raw_hash(tm_raw_hash_string)
-                .expect(
-                    "Unable to read native address of validator from \
-                     tendermint raw hash",
-                );
-            signer_set.insert(native_address.clone());
-            total_signing_stake += vote.validator_vp;
-
-            // Ensure TM stake updates properly with a debug_assert
-            let deltas = self.read_validator_deltas(&native_address).unwrap();
-            let stake: token::Change = deltas.get(epoch).unwrap();
-            let stake: u64 = Into::<i128>::into(stake).try_into().unwrap();
-            debug_assert_eq!(stake, vote.validator_vp);
-        }
-
-        // Get the block rewards coefficients (proposing, signing/voting,
-        // consensus set status)
-        let active_val_stake: Decimal = total_active_stake.into();
-        let signing_stake: Decimal = total_signing_stake.into();
-        let rewards_calculator = PosRewardsCalculator::new(
-            pos_params.block_proposer_reward,
-            pos_params.block_vote_reward,
-            total_signing_stake,
-            total_active_stake,
-        );
-        let coeffs = match rewards_calculator.get_reward_coeffs() {
-            Ok(coeffs) => coeffs,
-            Err(_) => return Err(InflationError::Error),
-        };
-
-        println!(
-            "TOTAL SIGNING STAKE (LOGGING BLOCK REWARDS) = {}",
-            signing_stake
-        );
-
-        // Calculate the fraction block rewards for each consensus validator and
-        // update the reward accumulators
-        let mut validator_accumulators = self
-            .read_consensus_validator_rewards_accumulator()
-            .unwrap_or_default();
-        for validator in validators.active.iter() {
-            let mut rewards_frac = Decimal::default();
-            let stake: Decimal = validator.bonded_stake.into();
-            println!(
-                "VALIDATOR STAKE (LOGGING BLOCK REWARDS) OF EPOCH {} = {}",
-                epoch, stake
-            );
-
-            // Proposer reward
-            if validator.address == *proposer_address {
-                rewards_frac += coeffs.proposer_coeff;
-            }
-
-            // Signer reward
-            if signer_set.contains(&validator.address) {
-                let signing_frac = stake / signing_stake;
-                rewards_frac += coeffs.signer_coeff * signing_frac;
-            }
-
-            // Active validator reward
-            let active_val_frac = stake / active_val_stake;
-            rewards_frac += coeffs.active_val_coeff * active_val_frac;
-
-            let prev_val = *validator_accumulators
-                .get(&validator.address)
-                .unwrap_or(&Decimal::ZERO);
-            validator_accumulators
-                .insert(validator.address.clone(), prev_val + rewards_frac);
-        }
-
-        // Write the updated map of reward accumulators back to storage
-        self.write_consensus_validator_rewards_accumulator(
-            &validator_accumulators,
-        );
-        Ok(())
-    }
 }
 
 #[allow(missing_docs)]
@@ -402,6 +208,12 @@ impl From<CommissionRateChangeError> for storage_api::Error {
     }
 }
 
+impl From<InflationError> for storage_api::Error {
+    fn from(err: InflationError) -> Self {
+        Self::new(err)
+    }
+}
+
 /// Get the storage handle to the epoched consensus validator set
 pub fn consensus_validator_set_handle() -> ConsensusValidatorSets {
     let key = storage::consensus_validator_set_key();
@@ -481,6 +293,30 @@ pub fn validator_set_positions_handle() -> ValidatorSetPositions {
 pub fn validator_slashes_handle(validator: &Address) -> Slashes {
     let key = storage::validator_slashes_key(validator);
     Slashes::open(key)
+}
+
+/// Get the storage handle to the rewards accumulator for the consensus
+/// validators in a given epoch
+pub fn rewards_accumulator_handle() -> RewardsAccumulator {
+    let key = storage::consensus_validator_rewards_accumulator_key();
+    RewardsAccumulator::open(key)
+}
+
+/// Get the storage handle to a validator's self rewards products
+pub fn validator_rewards_products_handle(
+    validator: &Address,
+) -> RewardsProducts {
+    let key = storage::validator_self_rewards_product_key(validator);
+    RewardsProducts::open(key)
+}
+
+/// Get the storage handle to the delegator rewards products associated with a
+/// particular validator
+pub fn delegator_rewards_products_handle(
+    validator: &Address,
+) -> RewardsProducts {
+    let key = storage::validator_delegation_rewards_product_key(validator);
+    RewardsProducts::open(key)
 }
 
 /// new init genesis
@@ -675,6 +511,52 @@ where
 {
     let key = num_consensus_validators_key();
     storage.write(&key, new_num)
+}
+
+/// Read current block proposer address.
+pub fn read_current_block_proposer_address<S>(
+    storage: &S,
+) -> storage_api::Result<Option<Address>>
+where
+    S: StorageRead,
+{
+    let key = current_block_proposer_key();
+    storage.read(&key)
+}
+
+/// Write current block proposer address.
+pub fn write_current_block_proposer_address<S>(
+    storage: &mut S,
+    address: Address,
+) -> storage_api::Result<()>
+where
+    S: StorageRead + StorageWrite,
+{
+    let key = current_block_proposer_key();
+    storage.write(&key, address)
+}
+
+/// Read last block proposer address.
+pub fn read_last_block_proposer_address<S>(
+    storage: &S,
+) -> storage_api::Result<Option<Address>>
+where
+    S: StorageRead,
+{
+    let key = last_block_proposer_key();
+    storage.read(&key)
+}
+
+/// Write last block proposer address.
+pub fn write_last_block_proposer_address<S>(
+    storage: &mut S,
+    address: Address,
+) -> storage_api::Result<()>
+where
+    S: StorageRead + StorageWrite,
+{
+    let key = last_block_proposer_key();
+    storage.write(&key, address)
 }
 
 /// Read PoS validator's delta value.
@@ -2629,4 +2511,160 @@ fn make_unbond_details<S>(
         amount,
         slashed_amount,
     }
+}
+
+/// Tally a running sum of the fracton of rewards owed to each validator in
+/// the consensus set. This is used to keep track of the rewards due to each
+/// consensus validator over the lifetime of an epoch.
+fn log_block_rewards<S>(
+    storage: &mut S,
+    epoch: impl Into<Epoch>,
+    proposer_address: &Address,
+    votes: &[VoteInfo],
+) -> storage_api::Result<()>
+where
+    S: StorageRead + StorageWrite,
+{
+    // TODO: all values collected here need to be consistent with the same
+    // block that the voting info corresponds to, which is the
+    // previous block from the current one we are in.
+
+    // The votes correspond to the last committed block (n-1 if we are
+    // finalizing block n)
+
+    let epoch: Epoch = epoch.into();
+    let params = read_pos_params(storage)?;
+    let consensus_validators = consensus_validator_set_handle().at(&epoch);
+    // dbg!(&epoch);
+
+    // let validator_set = self.read_validator_set();
+    // dbg!(&validator_set);
+    // let validators = validator_set.get(epoch).unwrap();
+    // let pos_params = self.read_pos_params();
+
+    // println!(
+    //     "VALIDATOR SET OF EPOCH {} LAST UPDATE = {}, LEN = {}:",
+    //     epoch,
+    //     validator_set.last_update(),
+    //     validator_set.data.len()
+    // );
+    // for val in &validators.active {
+    //     println!("STAKE: {}, ADDRESS: {}", val.bonded_stake, val.address);
+    //     let ck = self
+    //         .read_validator_consensus_key(&val.address)
+    //         .unwrap()
+    //         .get(epoch)
+    //         .unwrap()
+    //         .to_owned();
+    //     let hash_string1 = tm_consensus_key_raw_hash(&ck);
+    //     let bytes1 = HEXUPPER.decode(hash_string1.as_bytes()).unwrap();
+    //     dbg!(bytes1);
+    // }
+    // dbg!(votes);
+
+    // Get total stake of the consensus validator set
+    // TODO: this will need to account for rewards products?
+    let mut total_consensus_stake = 0_u64;
+    for validator in consensus_validators.iter(storage)? {
+        let (
+            NestedSubKey::Data {
+                key: amount,
+                nested_sub_key: _,
+            },
+            _address,
+        ) = validator?;
+        total_consensus_stake += u64::from(amount);
+    }
+
+    // Get set of signing validator addresses and the combined stake of
+    // these signers
+    let mut signer_set: HashSet<Address> = HashSet::new();
+    let mut total_signing_stake: u64 = 0;
+    for vote in votes.iter() {
+        if !vote.signed_last_block {
+            continue;
+        }
+        let tm_raw_hash_string =
+            hex::encode_upper(vote.validator_address.clone());
+        let native_address =
+            find_validator_by_raw_hash(storage, tm_raw_hash_string)?.expect(
+                "Unable to read native address of validator from tendermint \
+                 raw hash",
+            );
+
+        signer_set.insert(native_address.clone());
+        total_signing_stake += vote.validator_vp;
+
+        // Ensure TM stake updates properly with a debug_assert
+        let stake_from_deltas =
+            read_validator_stake(storage, &params, &native_address, epoch)?
+                .unwrap_or_default();
+        debug_assert_eq!(
+            stake_from_deltas,
+            token::Amount::from(vote.validator_vp)
+        );
+    }
+
+    // Get the block rewards coefficients (proposing, signing/voting,
+    // consensus set status)
+    let consensus_stake: Decimal = total_consensus_stake.into();
+    let signing_stake: Decimal = total_signing_stake.into();
+    let rewards_calculator = PosRewardsCalculator::new(
+        params.block_proposer_reward,
+        params.block_vote_reward,
+        total_signing_stake,
+        total_consensus_stake,
+    );
+    let coeffs = match rewards_calculator.get_reward_coeffs() {
+        Ok(coeffs) => coeffs,
+        Err(_) => return Err(InflationError::Error.into()),
+    };
+
+    println!(
+        "TOTAL SIGNING STAKE (LOGGING BLOCK REWARDS) = {}",
+        signing_stake
+    );
+
+    // Compute the fractional block rewards for each consensus validator and
+    // update the reward accumulators
+    let mut values: HashMap<Address, Decimal> = HashMap::new();
+    for validator in consensus_validators.iter(storage)? {
+        let (
+            NestedSubKey::Data {
+                key: stake,
+                nested_sub_key: _,
+            },
+            address,
+        ) = validator?;
+
+        let mut rewards_frac = Decimal::default();
+        let stake: Decimal = stake.into();
+        println!(
+            "VALIDATOR STAKE (LOGGING BLOCK REWARDS) OF EPOCH {} = {}",
+            epoch, stake
+        );
+
+        // Proposer reward
+        if address == *proposer_address {
+            rewards_frac += coeffs.proposer_coeff;
+        }
+        // Signer reward
+        if signer_set.contains(&address) {
+            let signing_frac = stake / signing_stake;
+            rewards_frac += coeffs.signer_coeff * signing_frac;
+        }
+        // Consensus validator reward
+        rewards_frac += coeffs.active_val_coeff * (stake / consensus_stake);
+
+        // Update the rewards accumulator
+        let prev = rewards_accumulator_handle()
+            .get(storage, &address)?
+            .unwrap_or_default();
+        values.insert(address, prev + rewards_frac);
+    }
+    for (address, value) in values.into_iter() {
+        rewards_accumulator_handle().insert(storage, address, value)?;
+    }
+
+    Ok(())
 }
