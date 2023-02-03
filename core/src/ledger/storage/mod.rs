@@ -774,7 +774,7 @@ where
                 "NEW EPOCH Next epoch min start height = {}",
                 self.next_epoch_min_start_height
             );
-//            self.update_allowed_conversions()?;
+            //            self.update_allowed_conversions()?;
         }
         self.update_epoch_in_merkle_tree()?;
         Ok(new_epoch)

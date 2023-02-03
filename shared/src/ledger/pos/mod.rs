@@ -13,7 +13,6 @@ pub use namada_proof_of_stake::types;
 use rust_decimal::Decimal;
 pub use vp::PosVP;
 
-use crate::ledger::storage::{self as ledger_storage, Storage, StorageHasher};
 use crate::types::address::{self, Address, InternalAddress};
 use crate::types::storage::Epoch;
 

@@ -407,18 +407,6 @@ where
     namada_proof_of_stake::bonds_and_unbonds(ctx.wl_storage, source, validator)
 }
 
-fn bonds_and_unbonds<D, H>(
-    ctx: RequestCtx<'_, D, H>,
-    source: Option<Address>,
-    validator: Option<Address>,
-) -> storage_api::Result<BondsAndUnbondsDetails>
-where
-    D: 'static + DB + for<'iter> DBIter<'iter> + Sync,
-    H: 'static + StorageHasher + Sync,
-{
-    namada_proof_of_stake::bonds_and_unbonds(ctx.wl_storage, source, validator)
-}
-
 // /// Get the total bond amount for the given bond ID (this may be delegation
 // or /// self-bond when `owner == validator`) at the given epoch, or the
 // current /// epoch when `None`.

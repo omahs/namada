@@ -6,7 +6,6 @@ use std::task::{Context, Poll};
 
 use futures::future::FutureExt;
 #[cfg(not(feature = "abcipp"))]
-use namada::ledger::pos::namada_proof_of_stake::PosBase;
 use namada::types::address::Address;
 #[cfg(not(feature = "abcipp"))]
 use namada::types::hash::Hash;

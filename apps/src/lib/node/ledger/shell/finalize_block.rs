@@ -10,8 +10,14 @@ use namada::ledger::pos::{
     staking_token_address, ADDRESS as POS_ADDRESS,
 };
 use namada::ledger::protocol;
-use namada::ledger::storage::write_log::StorageModification;
 use namada::ledger::storage_api::StorageRead;
+use namada::proof_of_stake::{
+    delegator_rewards_products_handle, read_current_block_proposer_address,
+    read_last_block_proposer_address, read_pos_params, read_total_stake,
+    read_validator_stake, rewards_accumulator_handle,
+    validator_commission_rate_handle, validator_rewards_products_handle,
+    write_current_block_proposer_address, write_last_block_proposer_address,
+};
 use namada::types::address::Address;
 #[cfg(feature = "abcipp")]
 use namada::types::key::{tm_consensus_key_raw_hash, tm_raw_hash_to_string};
@@ -387,7 +393,7 @@ where
 
         // Read the block proposer of the previously committed block in storage
         // (n-1 if we are in the process of finalizing n right now).
-        match self.wl_storage.storage.read_last_block_proposer_address() {
+        match read_last_block_proposer_address(&self.wl_storage)? {
             Some(proposer_address) => {
                 println!("FOUND LAST BLOCK PROPOSER");
                 if new_epoch {
@@ -425,20 +431,24 @@ where
                             "Unable to find native validator address of block \
                              proposer from tendermint raw hash",
                         );
-                    namada_proof_of_stake::write_last_block_proposer_address(
+                    write_last_block_proposer_address(
                         &mut self.wl_storage,
                         native_proposer_address,
-                    );
+                    )?;
                 }
 
                 #[cfg(not(feature = "abcipp"))]
                 {
-                    let cur_proposer = namada_proof_of_stake::read_current_block_proposer_address(&self.wl_storage)
-                        .unwrap();
-                    namada_proof_of_stake::write_last_block_proposer_address(
+                    let cur_proposer =
+                        read_current_block_proposer_address(&self.wl_storage)?
+                            .expect(
+                                "Should have found the current block proposer \
+                                 address",
+                            );
+                    write_last_block_proposer_address(
                         &mut self.wl_storage,
                         cur_proposer,
-                    );
+                    )?;
                 }
             }
             None => {
@@ -449,28 +459,33 @@ where
                     // key hash
                     let tm_raw_hash_string =
                         tm_raw_hash_to_string(req.proposer_address);
-                    let native_proposer_address = self
-                        .storage
-                        .read_validator_address_raw_hash(tm_raw_hash_string)
-                        .expect(
-                            "Unable to find native validator address of block \
-                             proposer from tendermint raw hash",
-                        );
-                    self.storage.write_last_block_proposer_address(
-                        &native_proposer_address,
+                    let native_proposer_address = find_validator_by_raw_hash(
+                        &self.wl_storage,
+                        tm_raw_hash_string,
+                    )
+                    .unwrap()
+                    .expect(
+                        "Unable to find native validator address of block \
+                         proposer from tendermint raw hash",
                     );
+                    write_last_block_proposer_address(
+                        &mut self.wl_storage,
+                        native_proposer_address,
+                    )?;
                 }
                 #[cfg(not(feature = "abcipp"))]
                 {
                     let proposer =
-                        self.storage.read_current_block_proposer_address();
+                        read_current_block_proposer_address(&self.wl_storage)?;
                     // .expect(
                     //     "Current block proposer should always be set in \
                     //      ProcessProposal",
                     // );
                     if let Some(proposer) = proposer {
-                        self.storage
-                            .write_last_block_proposer_address(&proposer);
+                        write_last_block_proposer_address(
+                            &mut self.wl_storage,
+                            proposer,
+                        )?;
                     }
                 }
             }
@@ -579,7 +594,7 @@ where
         current_epoch: Epoch,
         proposer_address: &Address,
         votes: &[VoteInfo],
-    ) {
+    ) -> Result<()> {
         let last_epoch = current_epoch - 1;
         // Get input values needed for the PD controller for PoS and MASP.
         // Run the PD controllers to calculate new rates.
@@ -589,11 +604,15 @@ where
         // Calculate the fractional block rewards for the previous block (final
         // block of the previous epoch), which also gives the final
         // accumulator value updates
-        self.storage
-            .log_block_rewards(last_epoch, proposer_address, votes)
-            .unwrap();
+        namada_proof_of_stake::log_block_rewards(
+            &mut self.wl_storage,
+            last_epoch,
+            proposer_address,
+            votes,
+        )?;
 
         // TODO: review if the appropriate epoch is being used (last vs now)
+        let pos_params = read_pos_params(&self.wl_storage)?;
 
         // Read from Parameters storage
         let epochs_per_year: u64 = self
@@ -616,14 +635,8 @@ where
         let total_tokens = self
             .read_storage_key(&total_supply_key(&staking_token_address()))
             .expect("Total NAM balance should exist in storage");
-        let total_deltas = self.storage.read_total_deltas();
-        let pos_locked_supply = total_deltas
-            .get(last_epoch)
-            .expect("maximum possible sum should fit within an i128");
-        let pos_locked_supply: Amount = u64::try_from(pos_locked_supply)
-            .expect("pos_locked_supply should be positive")
-            .into();
-        let pos_params = self.storage.read_pos_params();
+        let pos_locked_supply =
+            read_total_stake(&self.wl_storage, &params, last_epoch)?;
         let pos_locked_ratio_target = pos_params.target_staked_ratio;
         let pos_max_inflation_rate = pos_params.max_inflation_rate;
 
@@ -667,12 +680,11 @@ where
         // Mint tokens to the PoS account for the last epoch's inflation
         let pos_minted_tokens = new_pos_vals.inflation;
         inflation::mint_tokens(
-            &mut self.storage,
+            &mut self.wl_storage,
             &POS_ADDRESS,
             &staking_token_address(),
             Amount::from(pos_minted_tokens),
-        )
-        .unwrap();
+        )?;
 
         // For each consensus validator, update the rewards products
         //
@@ -680,31 +692,58 @@ where
         // memory-efficient
 
         // Get the number of blocks in the last epoch
-        let first_block_of_last_epoch =
-            self.storage.block.pred_epochs.first_block_heights
-                [last_epoch.0 as usize]
-                .0;
+        let first_block_of_last_epoch = self
+            .wl_storage
+            .storage
+            .block
+            .pred_epochs
+            .first_block_heights[last_epoch.0 as usize]
+            .0;
         let num_blocks_in_last_epoch = if first_block_of_last_epoch == 0 {
-            self.storage.block.height.0 - first_block_of_last_epoch - 1
+            self.wl_storage.storage.block.height.0
+                - first_block_of_last_epoch
+                - 1
         } else {
-            self.storage.block.height.0 - first_block_of_last_epoch
+            self.wl_storage.storage.block.height.0 - first_block_of_last_epoch
         };
 
         // Read the rewards accumulator, which was last updated when finalizing
         // the previous block
-        // TODO: may need to change logic of how this gets initialized
         // TODO: can/should this be optimized? Since we are reading and writing
         // to the accumulator storage earlier in apply_inflation
-        let accumulators = self
-            .storage
-            .read_consensus_validator_rewards_accumulator()
-            .expect("Accumulators should exist");
-
-        let current_epoch = Epoch::from(current_epoch.0);
-        let last_epoch = Epoch::from(last_epoch.0);
 
         // TODO: think about changing the reward to Decimal
         let mut reward_tokens_remaining = pos_minted_tokens;
+        for acc in rewards_accumulator_handle().iter(storage)? {
+            let (address, value) = acc?;
+
+            // Get reward token amount for this validator
+            let fractional_claim =
+                value / Decimal::from(num_blocks_in_last_epoch);
+            let reward = decimal_mult_u64(fractional_claim, pos_minted_tokens);
+
+            // Get validator data at the last epoch
+            let stake = read_validator_stake(
+                &self.wl_storage,
+                &params,
+                &address,
+                last_epoch,
+            )?
+            .map(Decimal::from)
+            .unwrap_or_default();
+            let last_rewards_product =
+                validator_rewards_products_handle(&address)
+                    .get(&self.wl_storage, &last_epoch)?
+                    .unwrap_or(Decimal::ONE);
+            let last_delegation_product =
+                delegator_rewards_products_handle(&address)
+                    .get(&self.wl_storage, &last_epoch)?
+                    .unwrap_or(Decimal::ONE);
+            let commission_rate = validator_commission_rate_handle(&address)
+                .get(&self.wl_storage, last_epoch, &params)?
+                .expect("Should be able to find validator commission rate");
+        }
+
         for (address, value) in accumulators.iter() {
             // Get reward token amount for this validator
             let fractional_claim =
@@ -768,7 +807,8 @@ where
 
         // Write new rewards parameters that will be used for the inflation of
         // the current new epoch
-        self.storage
+        self.wl_storage
+            .storage
             .write(
                 &params_storage::get_pos_inflation_amount_key(),
                 new_pos_vals
@@ -777,7 +817,8 @@ where
                     .expect("encode new reward rate"),
             )
             .expect("unable to encode new reward rate (Decimal)");
-        self.storage
+        self.wl_storage
+            .storage
             .write(
                 &params_storage::get_staked_ratio_key(),
                 new_pos_vals
@@ -791,6 +832,8 @@ where
         self.storage
             .delete(&consensus_validator_rewards_accumulator_key())
             .unwrap();
+
+        Ok(())
     }
 }
 
@@ -1284,16 +1327,16 @@ mod test_finalize_block {
         let val2 = validator_set.pop_first_shim().unwrap();
         let val3 = validator_set.pop_first_shim().unwrap();
 
-        let ck1 = shell
-            .storage
-            .read_validator_consensus_key(&val1.address)
-            .unwrap()
-            .get(Epoch::default())
-            .unwrap()
-            .to_owned();
-        let hash_string1 = tm_consensus_key_raw_hash(&ck1);
-        let bytes1 = HEXUPPER.decode(hash_string1.as_bytes()).unwrap();
-        dbg!(bytes1);
+        // let ck1 = shell
+        //     .storage
+        //     .read_validator_consensus_key(&val1.address)
+        //     .unwrap()
+        //     .get(Epoch::default())
+        //     .unwrap()
+        //     .to_owned();
+        // let hash_string1 = tm_consensus_key_raw_hash(&ck1);
+        // let bytes1 = HEXUPPER.decode(hash_string1.as_bytes()).unwrap();
+        // dbg!(bytes1);
 
         // TODO: figure out how to get the Tendermint public key hash bytes from
         // a Namada address!! Possible this won't work with my randomly chosen

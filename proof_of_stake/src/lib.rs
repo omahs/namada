@@ -2516,7 +2516,7 @@ fn make_unbond_details<S>(
 /// Tally a running sum of the fracton of rewards owed to each validator in
 /// the consensus set. This is used to keep track of the rewards due to each
 /// consensus validator over the lifetime of an epoch.
-fn log_block_rewards<S>(
+pub fn log_block_rewards<S>(
     storage: &mut S,
     epoch: impl Into<Epoch>,
     proposer_address: &Address,
